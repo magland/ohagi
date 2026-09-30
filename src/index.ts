@@ -23,9 +23,12 @@ import {
 import { resetTokenCmd, resetTokenHelp } from '../../mochiforge/src/reset-token-cli';
 import { userAdminCommands, userCommands } from '../../mochiforge/src/cli/user-cmd';
 import { bootstrapVault } from '../../mochiforge/src/vault';
+import { seedTrustProxy } from '../../mochiforge/src/config';
 import { shelfCommands } from './commands';
 import { makeBackupCommands } from '../../mochiforge/src/cli/backup-cmd';
 import { OHAGI_BACKUP } from './backup';
+import { OHAGI_DEPLOY } from './deploy';
+import { deployDestroyCmd, deployFlyCmd, deployResetTokenCmd, deployShowCmd } from '../../mochiforge/src/deploy-cli';
 
 // The ohagi command: serve a shelf, or talk to a served one the way `mochi`
 // talks to a vault. Built on mochiforge's CLI framework, so the option
@@ -74,6 +77,10 @@ async function serveCmd(args: string[], usage: () => never) {
   // the owner token is minted and printed once, or supplied through
   // OHAGI_OWNER_TOKEN and then not printed at all.
   const boot = bootstrapVault(root, process.env.OHAGI_OWNER_TOKEN ?? null);
+  // Set by `ohagi deploy fly`, which knows there is a TLS proxy in front but
+  // cannot write to the volume before the shelf exists. It only seeds the
+  // setting; config.json remains the place it lives.
+  const seeded = process.env.OHAGI_TRUST_PROXY === '1' ? seedTrustProxy(root) : false;
   // Imported here rather than at the top, for mochi's reason: a command that
   // is not starting the server should not pay for loading it.
   const { createApp } = await import('./server');
@@ -108,6 +115,7 @@ async function serveCmd(args: string[], usage: () => never) {
       console.log(`  ohagi login ${url}`);
       console.log('');
     }
+    if (seeded) console.log('Recorded network.trustProxy: true in config.json (OHAGI_TRUST_PROXY is set).');
     if (compiler.sandbox === 'none') {
       console.log('Compiles run without the bubblewrap sandbox, which this machine cannot provide: TeX\'s own');
       console.log('file and shell restrictions still apply, and lualatex is refused.');
@@ -264,7 +272,54 @@ token once. Options: -p/--port <n> (default 3000), --host <addr> (default
   },
 ];
 
-commands.push(...makeBackupCommands(OHAGI_BACKUP));
+// A command that parses its own arguments, as the deploy commands do, since
+// they are mochiforge's and take (args, usage).
+function raw(path: string[], summary: string, description: string, run: (args: string[], usage: () => never) => void | Promise<void>): Command {
+  return { path, summary, description: description || undefined, raw: true, run: (inv) => run(inv.argv, () => inv.help()) };
+}
+
+commands.push(
+  raw(
+    ['deploy', 'fly'],
+    'Put a shelf on Fly.io, or deploy an update to one',
+    `Usage: ohagi deploy fly <app> [--region <r>] [--volume <gb>] [--vm-size <s>]
+                            [--vm-memory <m>] [--org <o>]
+                            [--image <ref> | --from-source [--local-build]]
+
+Needs flyctl installed, and fly auth login done. The app name is globally
+unique on Fly and becomes the URL, https://<app>.fly.dev. Creating one mints
+the owner token here and hands it to the server as a secret, then prints it
+once the shelf answers. Run it again to deploy a new version; settings not
+named by a flag keep whatever the live app has. A shelf is a directory on one
+volume, so the app runs as exactly one machine.
+
+Compiling wants memory: --vm-memory 2gb is a sensible start for a shelf used
+by a few people, and lualatex documents want more.
+
+--from-source builds the image from the checkouts you are running (ohagi and
+mochiforge side by side); --local-build uses this machine's Docker rather than
+Fly's builder. --image <ref> deploys some other published tag. The image
+carries a full TeX Live, so it is several gigabytes.
+
+See also: ohagi deploy fly show <app>, ohagi deploy fly destroy <app>.`,
+    (args, usage) => deployFlyCmd(args, usage, OHAGI_DEPLOY)
+  ),
+  raw(['deploy', 'fly', 'show'], 'What Fly has for this app, and whether the shelf answers', '', (args, usage) => deployShowCmd(args, usage, OHAGI_DEPLOY)),
+  raw(
+    ['deploy', 'fly', 'reset-token'],
+    "Give a user of the app's shelf a new token, when the owner's is lost",
+    `Usage: ohagi deploy fly reset-token <app> [--user <name>] [--revoke-others]
+
+Mints a token here and runs ohagi reset-token on the machine over fly ssh,
+handing it only the token's hash. Needs flyctl and the Fly login that owns the
+app.`,
+    (args, usage) => deployResetTokenCmd(args, usage, OHAGI_DEPLOY)
+  ),
+  raw(['deploy', 'fly', 'destroy'], 'Destroy the app and its volume, and with them the shelf', 'No undo. Pass --yes to skip the confirmation.', (args, usage) =>
+    deployDestroyCmd(args, usage, OHAGI_DEPLOY)
+  ),
+  ...makeBackupCommands(OHAGI_BACKUP)
+);
 
 const cli: Cli = {
   name: 'ohagi',
@@ -274,6 +329,7 @@ const cli: Cli = {
     { name: 'collab', summary: "Manage a project's collaborators" },
     { name: 'file', summary: "Copy, move, and delete a project's files" },
     { name: 'user', summary: 'Manage the shelf’s users and their tokens (site admin)' },
+    { name: 'deploy', summary: 'Put a shelf on Fly.io' },
     { name: 'backup', summary: 'Copy a shelf to a directory on this machine' },
   ],
   commands,

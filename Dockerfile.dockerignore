@@ -1,0 +1,12 @@
+# The build context is the directory holding both checkouts, which may hold a
+# good deal else. Everything is excluded, and exactly what the Dockerfile
+# copies is let back in: never node_modules, dist, .git, or a local shelf,
+# which is somebody's data and never belongs in an image.
+*
+!ohagi/package.json
+!ohagi/package-lock.json
+!ohagi/tsconfig.json
+!ohagi/src
+!ohagi/client
+!ohagi/scripts/build-client.mjs
+!mochiforge/src
