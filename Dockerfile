@@ -1,4 +1,6 @@
-# The ohagi server image: Node, the compiled server, and a full TeX Live.
+# The ohagi server image: the compiled server, on the base image that holds
+# Node and a full TeX Live (Dockerfile.base, published by base.yml). BASE may
+# name another, such as one built locally from Dockerfile.base.
 #
 # ohagi compiles mochiforge's sources in with its own, so the build context is
 # the directory holding both checkouts side by side, not this one:
@@ -10,6 +12,8 @@
 # manifests through, whatever else the parent directory holds. `ohagi deploy
 # fly --from-source` assembles the same trees in a temporary directory and
 # builds this file from there.
+ARG BASE=ghcr.io/magland/ohagi-tex:trixie
+
 FROM node:24-trixie-slim AS build
 WORKDIR /build/ohagi
 COPY ohagi/package.json ohagi/package-lock.json ./
@@ -24,16 +28,10 @@ COPY ohagi/client ./client
 COPY ohagi/scripts/build-client.mjs ./scripts/build-client.mjs
 RUN npm run build && npm prune --omit=dev
 
-# The runtime: Debian's full TeX Live, latexmk with it, git for the project
-# histories and clones, and bubblewrap for the compile sandbox (it is used
-# when the machine allows unprivileged user namespaces, and the server says
-# at startup when it does not). The TeX documentation is left out, which is
-# most of TeX Live's size and nothing a compile reads.
-FROM node:24-trixie-slim
-RUN printf 'path-exclude=/usr/share/doc/*\npath-include=/usr/share/doc/*/copyright\npath-exclude=/usr/share/texlive/texmf-dist/doc/*\npath-exclude=/usr/share/texmf/doc/*\npath-exclude=/usr/share/man/*\n' > /etc/dpkg/dpkg.cfg.d/01-nodoc \
- && apt-get update \
- && apt-get install -y --no-install-recommends texlive-full latexmk git bubblewrap ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# The runtime: the base, with TeX Live, latexmk, git, and bubblewrap (it is
+# used when the machine allows unprivileged user namespaces, and the server
+# says at startup when it does not).
+FROM ${BASE}
 WORKDIR /app
 COPY --from=build /build/ohagi/node_modules ./node_modules
 COPY --from=build /build/ohagi/dist ./dist

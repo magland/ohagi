@@ -1,0 +1,18 @@
+# The base image the ohagi server image is built on: Node, Debian's full TeX
+# Live, latexmk, git for the project histories and clones, and bubblewrap for
+# the compile sandbox. It is published as ghcr.io/magland/ohagi-tex:trixie by
+# .github/workflows/base.yml, and rebuilt only when this file changes, when
+# asked, and once a month for Debian's updates.
+#
+# Kept apart from the server image because it is nearly all of its size and
+# almost never changes: a commit's image then builds in a minute or two on top
+# of it, and a machine that already holds this layer downloads only the few
+# megabytes above it.
+#
+# The TeX documentation is left out, which is most of TeX Live's size and
+# nothing a compile reads.
+FROM node:24-trixie-slim
+RUN printf 'path-exclude=/usr/share/doc/*\npath-include=/usr/share/doc/*/copyright\npath-exclude=/usr/share/texlive/texmf-dist/doc/*\npath-exclude=/usr/share/texmf/doc/*\npath-exclude=/usr/share/man/*\n' > /etc/dpkg/dpkg.cfg.d/01-nodoc \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends texlive-full latexmk git bubblewrap ca-certificates \
+ && rm -rf /var/lib/apt/lists/*

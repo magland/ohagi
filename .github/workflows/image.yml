@@ -11,9 +11,12 @@
 # The build context is the runner's workspace, holding both checkouts, since the
 # image compiles mochiforge's sources in (see the Dockerfile).
 #
-# The image carries a full TeX Live and is several gigabytes, so the runner's
-# preinstalled toolchains are cleared first to make room, and the build is
-# given longer than dango's.
+# The image is built on the base image (Dockerfile.base, published by
+# base.yml), which carries TeX Live and is nearly all of the size, so a
+# commit's build adds only the server's own few megabytes. It also runs after
+# each base rebuild, so the shelves take a new TeX Live or Debian update
+# without waiting for a commit. The base is several gigabytes to pull, so the
+# runner's preinstalled toolchains are still cleared first to make room.
 #
 # One thing this workflow cannot do for you: a newly created GitHub package is
 # private, and Fly pulls anonymously. After the first successful run, set the
@@ -23,7 +26,7 @@ name: image
 
 on:
   workflow_run:
-    workflows: [ci]
+    workflows: [ci, base]
     types: [completed]
     branches: [main]
   push:
@@ -45,7 +48,7 @@ jobs:
     if: >-
       github.event_name != 'workflow_run' || (
         github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
+        (github.event.workflow_run.event == 'push' || github.event.workflow_run.name == 'base') &&
         github.event.workflow_run.head_repository.full_name == github.repository
       )
     permissions:
@@ -176,7 +179,7 @@ jobs:
       github.repository == 'magland/ohagi' &&
       github.event_name != 'workflow_dispatch' && (
         github.event_name != 'workflow_run' || (
-          github.event.workflow_run.event == 'push' &&
+          (github.event.workflow_run.event == 'push' || github.event.workflow_run.name == 'base') &&
           github.event.workflow_run.head_repository.full_name == github.repository
         )
       )

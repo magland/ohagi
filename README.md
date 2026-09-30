@@ -30,7 +30,7 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 - **Project settings** in the shape of a repository's: the description, the compiler, public or private, collaborators and their roles, renaming or moving, and deletion; and a collection's owners.
 - **Administration** by mochi's own pages: users, their tokens and passkeys, the site-admin bit, sign-in with GitHub, and the theme.
 - **Backup** over mochi's protocol, with mochi's client: `ohagi backup ~/backups/shelf` keeps an incremental copy, and its `current/` is a servable shelf.
-- **Deploying** to Fly.io with mochi's deploy: `ohagi deploy fly <app> --from-source` builds an image with a full TeX Live and runs it on one machine and one volume.
+- **Deploying** to Fly.io with mochi's deploy: `ohagi deploy fly <app>` runs the published image on one machine and one volume, and `--from-source` builds one from the checkouts. The image is a thin layer on a base image holding Node and a full TeX Live (`Dockerfile.base`, published as `ghcr.io/magland/ohagi-tex:trixie`), which is rebuilt only when it changes and monthly, so a commit's image builds in a minute or two. CI redeploys shelf1 after every green build of `main`.
 - **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `file`, `compile`, `user`, `backup`, `deploy`, `api`, and `reset-token`. The `user`, `backup`, and `deploy` commands are mochi's own, against the same routes.
 
 ## How editing works

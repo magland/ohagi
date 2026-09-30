@@ -1,0 +1,79 @@
+# Publishes the base image the server image is built on: Node, Debian's full
+# TeX Live, latexmk, git, and bubblewrap (Dockerfile.base), as
+# ghcr.io/magland/ohagi-tex:trixie and a dated tag beside it.
+#
+# It is most of the server image's size and almost never changes, so it is
+# built only when Dockerfile.base changes, when dispatched, and once a month
+# for Debian's updates; each commit's server image is then a thin layer on top
+# of it (see image.yml, which runs again after this one, so the shelves take a
+# new base without waiting for a commit).
+#
+# One thing this workflow cannot do for you: a newly created GitHub package is
+# private. After the first successful run, set the package to public under
+# Packages > ohagi-tex > Package settings, so that a build outside this
+# repository's workflows (a developer's, or `deploy fly --from-source`) can
+# pull it.
+name: base
+
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile.base, .github/workflows/base.yml]
+  schedule:
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: base
+  cancel-in-progress: false
+
+jobs:
+  base:
+    if: github.repository == 'magland/ohagi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Room for TeX Live: the runner's preinstalled SDKs are several
+      # gigabytes nobody here uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af > /dev/null
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the tags
+        id: tags
+        run: |
+          image=ghcr.io/${{ github.repository_owner }}/ohagi-tex
+          echo "tags=$image:trixie,$image:trixie-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+          echo "ref=$image:trixie" >> "$GITHUB_OUTPUT"
+
+      # Never from cache: a monthly rebuild is for Debian's updates, and a
+      # cached layer would keep the old packages.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.base
+          platforms: linux/amd64
+          push: true
+          pull: true
+          no-cache: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      # What the server image and the compiler rely on being there.
+      - name: Check the tools are in the image
+        run: |
+          docker run --rm "${{ steps.tags.outputs.ref }}" sh -c 'node --version && pdflatex --version | head -1 && xelatex --version | head -1 && lualatex --version | head -1 && latexmk -v | head -2 && bwrap --version && git --version && prlimit --version'
