@@ -5,6 +5,8 @@ import express, { NextFunction, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { registerAccountWeb } from '../../mochiforge/src/accountweb';
+import { registerAdminWeb } from '../../mochiforge/src/adminweb';
+import { registerUsersApi } from '../../mochiforge/src/api/users';
 import { registerAssets } from '../../mochiforge/src/assets';
 import { loadConfig } from '../../mochiforge/src/config';
 import { clientKey, createAuthLimiter, createLimiter } from '../../mochiforge/src/limit';
@@ -13,7 +15,7 @@ import { setActiveTheme } from '../../mochiforge/src/themes';
 import { registerApi } from './api';
 import { Docs } from './docs';
 import { faviconSvg } from './logo';
-import { listCollectionNames, listProjectNames, projectDir, projectRole } from './projects';
+import { listCollectionNames, listProjectNames, projectDir, projectRole, removeUserGrants } from './projects';
 import { setNaming } from '../../mochiforge/src/naming';
 import { errorPage } from './views';
 import { registerWeb } from './web';
@@ -158,10 +160,17 @@ export function createApp(root: string, docs: Docs, staticDir = findStaticDir())
     next();
   });
 
+  // JSON bodies, as large as a text file the editor accepts.
+  app.use('/api', express.json({ limit: '16mb' }));
   registerApi(app, root, authLimiter, docs);
-  // Signing in and out, the account page, passkeys, and the profile: mochi's
-  // own routes, the same ones a vault serves.
+  // Who the caller is, the users, and their tokens: mochi's own routes, so
+  // mochi's user commands work against a shelf as they do against a vault.
+  registerUsersApi(app, root, authLimiter, { removeUserGrants });
+  // Signing in and out, the account page, passkeys, and the profile, and the
+  // site admin's pages (users, GitHub sign-in, the theme): mochi's own routes,
+  // the same ones a vault serves.
   registerAccountWeb(app, root, authLimiter);
+  registerAdminWeb(app, root, { removeUserGrants });
   registerWeb(app, root, docs, editorJs.tag);
 
   app.use((req, res) => {

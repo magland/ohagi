@@ -4,7 +4,7 @@ A self-hosted LaTeX editor with the shape of Overleaf, where several people edit
 
 ohagi is built from the same parts as [Mochi Forge](https://github.com/magland/mochiforge), its sibling (checked out in the next directory for development), as [dango](https://github.com/magland/dango) is. Where mochi has a *vault* of repositories, ohagi has a *shelf* of projects, grouped into collections in the same way, and the two look and behave alike: the same page layout, themes, sign-in, account pages, tokens, permissions, and command line.
 
-This is early. Collaborative editing, sign-in, members-only projects, and creating projects work; compiling, the file tree, project settings, and git come next.
+This is early. Collaborative editing, sign-in, members-only projects, project settings, user administration, and the command line work; compiling, the file tree, and git come next.
 
 ## Try it
 
@@ -24,7 +24,9 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 - **Projects in collections,** addressed as `/<collection>/<project>`, with mochi's naming rules.
 - **Members only.** A project is private: its collaborators, its collection's owners, and site admins see it, and nobody else learns it exists. Roles are mochi's: `read` opens the editor read-only, `write` edits, `admin` manages. A user owns the collection named after them.
 - **Sign-in and accounts** are mochi's own pages: tokens, passkeys, codes carried from another browser, and GitHub sign-in, with the same sliding sessions and CSRF checks.
-- **A command line** on mochi's framework: `ohagi serve`, `login`, `logout`, `whoami`, `api`, and `reset-token`.
+- **Project settings** in the shape of a repository's: the description, public or private, collaborators and their roles, and deletion.
+- **Administration** by mochi's own pages: users, their tokens and passkeys, the site-admin bit, sign-in with GitHub, and the theme.
+- **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `user`, `api`, and `reset-token`. The `user` commands are mochi's own, against the same routes.
 
 ## How editing works
 
@@ -61,7 +63,7 @@ A file stays a plain file, written a moment after typing stops. Each accepted ch
 
 ## Relationship to mochiforge
 
-ohagi imports mochiforge's modules directly from the sibling checkout (`../mochiforge`), as dango does: the identity store, sessions and CSRF, permissions, the page layout, stylesheet, themes, and page script, the sign-in and account routes, markdown and HTML templates, rate limiting, and the CLI framework. mochi's `setNaming` lets the shared code spell ohagi's names, so a shelf mints `ohagi_` tokens, sets an `ohagi_session` cookie, keeps identity in `shelf.json`, and draws ohagi's logo in the shared layout. Making mochi's pieces reusable took small changes on mochi's side, each leaving mochi's own behaviour as it was: the account routes and asset routes moved into modules of their own, and the layout gained a few naming hooks.
+ohagi imports mochiforge's modules directly from the sibling checkout (`../mochiforge`), as dango does: the identity store, sessions and CSRF, permissions, the page layout, stylesheet, themes, and page script, the sign-in, account, and admin routes, the user and token API, the user commands, markdown and HTML templates, rate limiting, and the CLI framework. mochi's `setNaming` lets the shared code spell ohagi's names, so a shelf mints `ohagi_` tokens, sets an `ohagi_session` cookie, keeps identity in `shelf.json`, and draws ohagi's logo in the shared layout. Making mochi's pieces reusable took small changes on mochi's side, each leaving mochi's own behaviour as it was: the account, admin, and asset routes, the user API, and the user commands moved into modules of their own, and the layout gained a few naming hooks. Those changes are on mochi's `ohagi-shared` branch for now.
 
 The trade-off is dango's: ohagi does not build without the sibling checkout present. The compiled output carries the mochiforge modules it uses (`dist/mochiforge` beside `dist/ohagi`), so what ships does not.
 
@@ -79,7 +81,7 @@ The tests drive `client/sync.ts`, the same module the browser runs, from Node, a
 - A file edited on disk while the server has it open is overwritten on the next write. Edits made on disk while the server is stopped are picked up, at the cost of a new epoch.
 - When a page's history cannot be continued (a new epoch, or a page offline for longer than the kept history of 1000 changes), its unsent edits are lost, and the page says so.
 - Access is checked when an editor connects. Someone removed from a project while their editor is open keeps its stream until they reload.
-- Users, collaborators, and collection owners are managed by editing the shelf for now; the admin and settings pages are next.
+- A collection's owners are managed from the command line (`ohagi collection owner add`); there is no collection settings page yet.
 
 ## License
 

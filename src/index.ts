@@ -7,7 +7,6 @@ import { api, request } from '../../mochiforge/src/cli-api';
 import { normalizeApiPath } from '../../mochiforge/src/cli/api-cmd';
 import { CliError, EXIT_FAIL, EXIT_USAGE, exitCodeForStatus } from '../../mochiforge/src/cli/exit';
 import { readFileArg, readStdin } from '../../mochiforge/src/cli/input';
-import { JSON_OPTION, jsonMode, pickObject, printJson } from '../../mochiforge/src/cli/output';
 import { Cli, Command, Invocation, dispatch } from '../../mochiforge/src/cli/parse';
 import { TARGET_OPTIONS, targetFrom } from '../../mochiforge/src/cli/target';
 import {
@@ -22,7 +21,9 @@ import {
   setHelper,
 } from '../../mochiforge/src/credentials';
 import { resetTokenCmd, resetTokenHelp } from '../../mochiforge/src/reset-token-cli';
+import { userAdminCommands, userCommands } from '../../mochiforge/src/cli/user-cmd';
 import { bootstrapVault } from '../../mochiforge/src/vault';
+import { shelfCommands } from './commands';
 
 // The ohagi command: serve a shelf, or talk to a served one the way `mochi`
 // talks to a vault. Built on mochiforge's CLI framework, so the option
@@ -210,18 +211,10 @@ token once. Options: -p/--port <n> (default 3000), --host <addr> (default
     options: [{ name: 'host', type: 'string', value: '<url>', summary: 'Shelf URL when not given as an argument' }],
     run: logoutCmd,
   },
-  {
-    path: ['whoami'],
-    summary: 'Say who the current token belongs to',
-    options: [...TARGET_OPTIONS, JSON_OPTION],
-    async run(inv) {
-      const target = await targetFrom(inv);
-      const data = await api(target, 'GET', '/api/whoami');
-      const json = jsonMode(inv);
-      if (json.enabled) printJson(pickObject(data, json.fields));
-      else console.log(`${data.username} @ ${target.host}${data.siteAdmin ? ' (site admin)' : ''}`);
-    },
-  },
+  ...shelfCommands,
+  // Users and the current token: mochi's own commands, against the same routes.
+  ...userCommands(),
+  ...userAdminCommands(),
   {
     path: ['api'],
     summary: 'Call any route of the shelf JSON API and print what it answers',
@@ -262,7 +255,12 @@ token once. Options: -p/--port <n> (default 3000), --host <addr> (default
 
 const cli: Cli = {
   name: 'ohagi',
-  groups: [],
+  groups: [
+    { name: 'collection', summary: 'List, create, and own collections' },
+    { name: 'project', summary: 'List, create, view, and delete projects' },
+    { name: 'collab', summary: "Manage a project's collaborators" },
+    { name: 'user', summary: 'Manage the shelf’s users and their tokens (site admin)' },
+  ],
   commands,
   footer: FOOTER,
 };

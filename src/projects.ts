@@ -2,7 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { writeFileAtomic } from '../../mochiforge/src/atomic';
 import { collectionDir, collectionsDir } from '../../mochiforge/src/layout';
-import { Role, atLeast, repoIsPrivate, repoRole, setRepoPrivate } from '../../mochiforge/src/perms';
+import {
+  Role,
+  atLeast,
+  collectionOwners,
+  removeCollaborator,
+  removeCollectionOwner,
+  repoAccess,
+  repoIsPrivate,
+  repoRole,
+  setRepoPrivate,
+} from '../../mochiforge/src/perms';
 import { isDotName, isValidName, isValidUserName } from '../../mochiforge/src/scan';
 import { AuthResult } from '../../mochiforge/src/vault';
 
@@ -273,4 +283,20 @@ export function createProject(root: string, collection: string, name: string, de
 /** Remove a project's directory, files and history alike. */
 export function deleteProject(ref: ProjectRef): void {
   fs.rmSync(ref.dir, { recursive: true, force: true });
+}
+
+/**
+ * Every grant naming a user, removed when the user is: their place among a
+ * collection's owners and on every project's collaborators. A later user
+ * given the same name inherits nothing. mochi's does the same over
+ * repositories (removeUserGrants there).
+ */
+export function removeUserGrants(root: string, username: string): void {
+  for (const collection of listCollectionNames(root)) {
+    if (collectionOwners(root, collection).includes(username)) removeCollectionOwner(root, collection, username);
+    for (const name of listProjectNames(root, collection)) {
+      const dir = projectDir(root, collection, name);
+      if (repoAccess(dir).collaborators[username] !== undefined) removeCollaborator(dir, username);
+    }
+  }
 }

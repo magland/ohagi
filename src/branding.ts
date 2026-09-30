@@ -21,6 +21,8 @@ setNaming({
   displayName: 'ohagi',
   accessFile: 'access.json',
   itemNoun: 'project',
+  itemNounPlural: 'projects',
+  adminSections: ['users', 'github', 'appearance'],
   jumpGroup: 'Projects',
   wordmark: WORDMARK,
   mark: MARK,
