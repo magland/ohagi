@@ -115,7 +115,8 @@ export function collectionPage(
   collection: string,
   projects: ProjectCard[],
   viewer: Viewer | null,
-  canCreate: boolean
+  canCreate: boolean,
+  canAdmin = false
 ): string {
   const body =
     projects.length === 0
@@ -124,9 +125,57 @@ export function collectionPage(
   const newBtn = canCreate
     ? html`<a class="btn btn-primary" href="/new?collection=${esc(collection)}">${icon('plus')}<span>New project</span></a>`
     : '';
-  const content = html`<div class="page-head"><h1 class="with-avatar">${avatar(collection, 28, 'square')}${collection}</h1><span class="right-group">${newBtn}</span></div>
+  const settingsBtn = canAdmin
+    ? html`<a class="btn" href="${collectionUrl(collection)}/settings">${icon('sliders')}<span>Settings</span></a>`
+    : '';
+  const content = html`<div class="page-head"><h1 class="with-avatar">${avatar(collection, 28, 'square')}${collection}</h1><span class="right-group">${settingsBtn}${newBtn}</span></div>
 ${body}`;
   return page(collection, content, { crumbs: crumbs(collection), viewer, path: collectionUrl(collection) });
+}
+
+export function collectionSettingsPage(
+  collection: string,
+  owners: string[],
+  projectCount: number,
+  viewer: Viewer,
+  opts: { msg?: string; error?: string } = {}
+): string {
+  const base = `${collectionUrl(collection)}/settings`;
+  const rows = owners.map(
+    (o) => html`<tr><td class="with-avatar">${userLink(o, { face: 24, bold: true })}</td><td class="right">
+<form method="post" action="${base}/owners/remove" class="inline-form">
+${csrfField(viewer)}
+<input type="hidden" name="username" value="${o}">
+<button type="submit" class="btn btn-danger-outline">Remove</button>
+</form></td></tr>`
+  );
+  const danger =
+    projectCount === 0
+      ? html`<div class="danger-zone">
+<h3>Danger zone</h3>
+<p>The collection is empty, so deleting it removes only its directory and its list of owners.</p>
+<form method="post" action="${base}/delete">
+${csrfField(viewer)}
+<div class="field"><label for="confirm">Type <b class="mono">${collection}</b> to confirm</label><input type="text" id="confirm" name="confirm" autocomplete="off"></div>
+<button type="submit" class="btn btn-danger">${icon('trash')}<span>Delete this collection</span></button>
+</form>
+</div>`
+      : html`<p class="muted small">A collection holding projects cannot be deleted; delete or move its projects first.</p>`;
+  const content = html`<div class="page-head"><h1 class="with-avatar">${avatar(collection, 28, 'square')}${collection}</h1></div>
+<h2>Settings</h2>
+${flash(opts.msg)}
+${formError(opts.error)}
+<div class="box settings-box" id="owners"><div class="box-header">${icon('people')}Owners</div><div class="box-body">
+<p>Owners hold the admin role on every project in <span class="mono">${collection}</span>, create projects in it, and manage it. The user named <b>${collection}</b>, if there is one, owns it without being listed.</p>
+${rows.length ? html`<table class="listing"><tbody>${rows}</tbody></table>` : html`<p class="muted">No owners listed.</p>`}
+<form method="post" action="${base}/owners" class="inline-form">
+${csrfField(viewer)}
+<label for="ownerUser">User</label><input type="text" id="ownerUser" name="username" required>
+<button type="submit" class="btn">${icon('people')}<span>Add owner</span></button>
+</form>
+</div></div>
+${danger}`;
+  return page(`Settings - ${collection}`, content, { crumbs: crumbs(collection), viewer, path: base });
 }
 
 // ---- a project ----

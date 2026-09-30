@@ -1,5 +1,18 @@
 import { Express, Request, Response } from 'express';
-import { Role, atLeast, collectionOwners, canCreateCollection, canCreateRepo, removeCollaborator, repoAccess, setCollaborator, setRepoPrivate } from '../../mochiforge/src/perms';
+import {
+  Role,
+  addCollectionOwner,
+  atLeast,
+  canAdminCollection,
+  collectionOwners,
+  canCreateCollection,
+  canCreateRepo,
+  removeCollaborator,
+  removeCollectionOwner,
+  repoAccess,
+  setCollaborator,
+  setRepoPrivate,
+} from '../../mochiforge/src/perms';
 import { userExists } from '../../mochiforge/src/vault';
 import { Viewer, getViewer } from '../../mochiforge/src/session';
 import { field, requireViewerPage, requireViewerPost, urlencodedForm } from '../../mochiforge/src/web';
@@ -22,6 +35,7 @@ import {
   projectRole,
   projectUpdated,
   canWrite,
+  deleteCollection,
   deleteProject,
   filesDir,
   setProjectMeta,
@@ -154,7 +168,74 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
     const { collection } = req.params;
     if (!collectionExists(root, collection)) return notFound(res, viewer, `Collection ${collection} not found`);
     const canCreate = viewer ? canCreateRepo(root, viewer.auth, collection, 'x') : false;
-    res.type('html').send(views.collectionPage(collection, cards(viewer, collection), viewer, canCreate));
+    const canAdmin = viewer ? canAdminCollection(root, viewer.auth, collection) : false;
+    res.type('html').send(views.collectionPage(collection, cards(viewer, collection), viewer, canCreate, canAdmin));
+  });
+
+  // ---- a collection's settings: its owners, and deleting it while empty ----
+
+  function loadCollectionAdmin(req: Request, res: Response, post: boolean): { viewer: Viewer; collection: string } | null {
+    const viewer = post ? requireViewerPost(root, req, res) : requireViewerPage(root, req, res);
+    if (!viewer) return null;
+    const { collection } = req.params;
+    if (!collectionExists(root, collection)) {
+      notFound(res, viewer, `Collection ${collection} not found`);
+      return null;
+    }
+    if (!canAdminCollection(root, viewer.auth, collection)) {
+      res.status(403).type('html').send(views.errorPage(403, `Only the owners of ${collection} and site admins manage it.`, { viewer }));
+      return null;
+    }
+    return { viewer, collection };
+  }
+
+  const collectionSettings = (res: Response, c: { viewer: Viewer; collection: string }, opts: { msg?: string; error?: string; status?: number } = {}) =>
+    res
+      .status(opts.status ?? 200)
+      .type('html')
+      .send(
+        views.collectionSettingsPage(c.collection, collectionOwners(root, c.collection), listProjectNames(root, c.collection).length, c.viewer, opts)
+      );
+
+  app.get('/:collection/settings', (req, res) => {
+    const c = loadCollectionAdmin(req, res, false);
+    if (!c) return;
+    collectionSettings(res, c, { msg: typeof req.query.msg === 'string' ? req.query.msg : undefined });
+  });
+
+  app.post('/:collection/settings/owners', form, (req, res) => {
+    const c = loadCollectionAdmin(req, res, true);
+    if (!c) return;
+    const username = field(req, 'username').trim();
+    if (!userExists(root, username)) {
+      collectionSettings(res, c, { error: `There is no user ${username} on this shelf.`, status: 404 });
+      return;
+    }
+    if (username !== c.collection) addCollectionOwner(root, c.collection, username);
+    res.redirect(303, `${views.collectionUrl(c.collection)}/settings?msg=${encodeURIComponent(`${username} owns ${c.collection}.`)}`);
+  });
+
+  app.post('/:collection/settings/owners/remove', form, (req, res) => {
+    const c = loadCollectionAdmin(req, res, true);
+    if (!c) return;
+    const username = field(req, 'username').trim();
+    removeCollectionOwner(root, c.collection, username);
+    res.redirect(303, `${views.collectionUrl(c.collection)}/settings?msg=${encodeURIComponent(`${username} no longer owns ${c.collection}.`)}`);
+  });
+
+  app.post('/:collection/settings/delete', form, (req, res) => {
+    const c = loadCollectionAdmin(req, res, true);
+    if (!c) return;
+    if (listProjectNames(root, c.collection).length > 0) {
+      collectionSettings(res, c, { error: 'A collection holding projects cannot be deleted.', status: 409 });
+      return;
+    }
+    if (field(req, 'confirm').trim() !== c.collection) {
+      collectionSettings(res, c, { error: `Type ${c.collection} exactly to confirm deletion.`, status: 400 });
+      return;
+    }
+    deleteCollection(root, c.collection);
+    res.redirect(303, '/');
   });
 
   /**

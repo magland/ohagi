@@ -300,3 +300,9 @@ export function removeUserGrants(root: string, username: string): void {
     }
   }
 }
+
+/** Remove an empty collection's directory (its owners list goes with it). */
+export function deleteCollection(root: string, collection: string): void {
+  if (listProjectNames(root, collection).length > 0) throw new ProjectError(`Collection ${collection} still holds projects.`, 'exists');
+  fs.rmSync(collectionDir(root, collection), { recursive: true, force: true });
+}

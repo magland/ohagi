@@ -471,3 +471,34 @@ test('project settings: collaborators, visibility, and deletion, by role', async
     await srv.stop();
   }
 });
+
+test('collection settings: owners, and deleting only when empty', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  try {
+    const dev = await signIn(srv.base, 'dev');
+    const alice = await signIn(srv.base, 'alice');
+    const post = async (cookie: string, url: string, fields: Record<string, string>) =>
+      fetch(`${srv.base}${url}`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(fields).toString(),
+      });
+    // alice does not own lab.
+    assert.equal((await getPage(srv.base, '/lab/settings', alice)).status, 403);
+    const page = await getPage(srv.base, '/lab/settings', dev);
+    assert.equal(page.status, 200);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(page.body)![1];
+    assert.equal((await post(dev, '/lab/settings/owners', { csrf, username: 'alice' })).status, 303);
+    // Now she owns it, and with it every project in it.
+    assert.equal((await getPage(srv.base, '/lab/proposal', alice)).status, 200);
+    assert.equal((await getPage(srv.base, '/lab/settings', alice)).status, 200);
+    // A collection with projects is not deleted.
+    assert.equal((await post(dev, '/lab/settings/delete', { csrf, confirm: 'lab' })).status, 409);
+    assert.equal((await post(dev, '/lab/settings/owners/remove', { csrf, username: 'alice' })).status, 303);
+    assert.equal((await getPage(srv.base, '/lab/proposal', alice)).status, 404);
+  } finally {
+    await srv.stop();
+  }
+});

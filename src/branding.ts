@@ -19,6 +19,7 @@ setNaming({
   envPrefix: 'OHAGI',
   configDirName: 'ohagi',
   displayName: 'ohagi',
+  git: false,
   accessFile: 'access.json',
   itemNoun: 'project',
   itemNounPlural: 'projects',
