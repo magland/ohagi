@@ -77,11 +77,12 @@ made against the current version; a page that is behind catches up first.
 if (require.main === module) {
   const root = path.resolve(process.argv[2] ?? 'example-root');
   if (fs.existsSync(path.join(root, 'shelf.json'))) {
-    console.log(`${root} already exists; leaving it alone.`);
-    process.exit(0);
+    console.log(`Example shelf at ${root} already exists; leaving it alone (delete it to start over).`);
+  } else {
+    createExample(root);
+    console.log(`Example shelf at ${root}`);
   }
-  createExample(root);
-  console.log(`Example shelf at ${root}`);
+  // The tokens are fixed, so they are the same for a shelf made earlier.
   console.log(`  site admin: dev    token ${EXAMPLE_TOKENS.dev}`);
   console.log(`  user:       alice  token ${EXAMPLE_TOKENS.alice}  (owns alice/paper)`);
   console.log(`  user:       bob    token ${EXAMPLE_TOKENS.bob}  (writes alice/paper, admin on lab/proposal)`);
