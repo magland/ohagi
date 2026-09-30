@@ -501,6 +501,7 @@ ${projectTitle(ref, view.isPrivate)}
 <section class="pdf-pane" aria-label="PDF">
 <div class="pdf-bar">
 <button type="button" class="btn btn-primary" id="recompile" title="Recompile (Ctrl+S or Ctrl+Enter)">${icon('play')}<span>Recompile</span></button>
+<label class="auto-compile small" title="Compile a moment after typing stops"><input type="checkbox" id="auto-compile"> Auto</label>
 <span id="compile-status" class="muted small"></span>
 <button type="button" class="btn" id="show-issues" hidden></button>
 <a class="btn" id="pdf-download" href="/api/projects/${ref.collection}/${ref.name}/output.pdf?download=1" hidden>${icon('download')}<span>PDF</span></a>

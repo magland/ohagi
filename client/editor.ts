@@ -150,6 +150,8 @@ async function main() {
 
   let sync: Sync;
   const editable = new Compartment();
+  // Set once the PDF pane is ready; until then a change has nothing to schedule.
+  let onTextChanged: () => void = () => undefined;
   const makeState = (doc: string, version: number, clientID?: string): EditorState =>
     EditorState.create({
       doc,
@@ -177,6 +179,7 @@ async function main() {
         EditorView.updateListener.of((u) => {
           if (!sync) return;
           sync.changed();
+          if (u.docChanged) onTextChanged();
           if (u.docChanged || u.selectionSet) {
             const r = u.state.selection.main;
             sync.select(r.anchor, r.head);
@@ -291,6 +294,29 @@ async function main() {
     }
   };
   recompileBtn.addEventListener('click', () => void recompile());
+
+  // Auto-compile: a compile a moment after the text stops changing, whoever
+  // changed it. The choice is this browser's, kept in its storage.
+  const auto = $('auto-compile') as HTMLInputElement;
+  try {
+    auto.checked = localStorage.getItem('ohagi-auto-compile') === '1';
+  } catch {
+    // storage blocked; the box starts off
+  }
+  auto.addEventListener('change', () => {
+    try {
+      localStorage.setItem('ohagi-auto-compile', auto.checked ? '1' : '0');
+    } catch {
+      // not remembered, which is all that is lost
+    }
+  });
+  let autoTimer: ReturnType<typeof setTimeout> | null = null;
+  const textChanged = () => {
+    if (!auto.checked) return;
+    if (autoTimer) clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => void recompile(), 2500);
+  };
+  onTextChanged = textChanged;
   window.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'Enter')) {
       e.preventDefault();

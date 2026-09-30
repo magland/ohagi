@@ -71,3 +71,4 @@ table.listing.tree td:last-child { width: 1%; white-space: nowrap; }
 .status-failure, .status-timeout, .status-error { color: var(--danger); }
 @media (max-width: 1000px) { .pdf-pane { flex-basis: 40%; } }
 @media (max-width: 700px) { .pdf-pane { display: none; } }
+.auto-compile { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-muted); cursor: pointer; }
