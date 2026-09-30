@@ -350,6 +350,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
           {
             ref: p.ref,
             description: projectMeta(p.ref).description,
+            engine: projectMeta(p.ref).engine ?? 'pdflatex',
             isPrivate: access.private,
             canAdmin: atLeast(p.role, 'admin'),
             collaborators: Object.entries(access.collaborators)
@@ -378,7 +379,11 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
       renderSettings(res, p, { error: 'The description must be one line of at most 400 characters.', status: 400 });
       return;
     }
-    setProjectMeta(p.ref, { ...projectMeta(p.ref), description });
+    const engineField = field(req, 'engine');
+    const meta = { ...projectMeta(p.ref), description };
+    if (engineField === 'xelatex' || engineField === 'lualatex') meta.engine = engineField;
+    else delete meta.engine;
+    setProjectMeta(p.ref, meta);
     res.redirect(303, settingsUrl(p.ref, 'Saved.'));
   });
 

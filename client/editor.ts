@@ -272,6 +272,8 @@ async function main() {
     compileStatus.textContent = 'Compiling…';
     compileStatus.className = 'small muted';
     try {
+      // What was just typed goes to the server before the compile is asked for.
+      await sync.whenSynced();
       const res = await fetch(`${api}/compile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

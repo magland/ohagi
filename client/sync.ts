@@ -103,6 +103,23 @@ export class Sync {
     this.report();
   }
 
+  /**
+   * Resolves once everything typed on this page so far has been taken by the
+   * server (or after `timeoutMs`, whichever is first), so that a compile asked
+   * for now sees the last keystrokes.
+   */
+  whenSynced(timeoutMs = 5000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    return new Promise((resolve) => {
+      const check = () => {
+        if (sendableUpdates(this.host.state()).length === 0) resolve(true);
+        else if (Date.now() > deadline) resolve(false);
+        else setTimeout(check, 25);
+      };
+      check();
+    });
+  }
+
   select(anchor: number, head: number): void {
     this.selection = { anchor, head };
     void this.sendPresence();

@@ -356,6 +356,7 @@ ${csrfField(viewer)}
 export interface SettingsView {
   ref: ProjectRef;
   description: string;
+  engine: string;
   isPrivate: boolean;
   canAdmin: boolean;
   collaborators: { username: string; role: string }[];
@@ -371,6 +372,9 @@ export function projectSettingsPage(view: SettingsView, viewer: Viewer): string 
 <form method="post" action="${base}/settings">
 ${csrfField(viewer)}
 <div class="field"><label for="description">Description</label><input type="text" id="description" name="description" value="${view.description}"><p class="muted small">Shown beside the project in listings and in its About panel.</p></div>
+<div class="field"><label for="engine">Compiler</label><select id="engine" name="engine">${['pdflatex', 'xelatex', 'lualatex'].map(
+    (e) => html`<option value="${e}"${e === view.engine ? raw(' selected') : ''}>${e}</option>`
+  )}</select><p class="muted small">What latexmk runs. pdflatex suits most documents; xelatex and lualatex take system fonts and Unicode input directly.</p></div>
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
 </form>
 </div></div>`;
