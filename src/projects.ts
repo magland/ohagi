@@ -269,3 +269,8 @@ export function createProject(root: string, collection: string, name: string, de
   fs.writeFileSync(path.join(filesDir(dir), 'main.tex'), TEMPLATE);
   return ref;
 }
+
+/** Remove a project's directory, files and history alike. */
+export function deleteProject(ref: ProjectRef): void {
+  fs.rmSync(ref.dir, { recursive: true, force: true });
+}

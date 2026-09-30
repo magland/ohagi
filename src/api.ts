@@ -144,7 +144,7 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       }
       res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     };
-    const unsubscribe = a.doc.subscribe({ clientID, send }, epoch, Number.isInteger(version) ? version : -1);
+    const unsubscribe = a.doc.subscribe({ clientID, send, end: close }, epoch, Number.isInteger(version) ? version : -1);
     const beat = setInterval(() => res.write(': beat\n\n'), HEARTBEAT_MS);
     req.on('close', close);
   });

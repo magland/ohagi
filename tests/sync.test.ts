@@ -424,3 +424,50 @@ test('creating a project and a collection follows mochi’s rules', async () => 
     await srv.stop();
   }
 });
+
+test('project settings: collaborators, visibility, and deletion, by role', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  try {
+    const alice = await signIn(srv.base, 'alice');
+    const bob = await signIn(srv.base, 'bob');
+    const carol = await signIn(srv.base, 'carol');
+    const csrfOf = async (cookie: string, url: string) => /name="csrf" value="([^"]+)"/.exec((await getPage(srv.base, url, cookie)).body)![1];
+    const post = async (cookie: string, url: string, fields: Record<string, string>) =>
+      fetch(`${srv.base}${url}`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(fields).toString(),
+      });
+
+    // carol reads, so she has no settings page; bob writes, so he may change the
+    // description and nothing else.
+    assert.equal((await getPage(srv.base, '/alice/paper/settings', carol)).status, 403);
+    const bobCsrf = await csrfOf(bob, '/alice/paper/settings');
+    assert.equal((await post(bob, '/alice/paper/settings', { csrf: bobCsrf, description: 'Edited by bob' })).status, 303);
+    assert.match((await getPage(srv.base, '/alice/paper', alice)).body, /Edited by bob/);
+    assert.equal((await post(bob, '/alice/paper/settings/collaborators', { csrf: bobCsrf, username: 'bob', role: 'admin' })).status, 403);
+
+    // alice owns it: she adds and removes collaborators, but only real users.
+    const aliceCsrf = await csrfOf(alice, '/alice/paper/settings');
+    assert.equal((await post(alice, '/alice/paper/settings/collaborators', { csrf: aliceCsrf, username: 'nobody', role: 'read' })).status, 404);
+    assert.equal((await post(alice, '/alice/paper/settings/collaborators/remove', { csrf: aliceCsrf, username: 'carol' })).status, 303);
+    assert.equal((await getPage(srv.base, '/alice/paper', carol)).status, 404, 'carol is off the project');
+
+    // Made public, anyone signed in can read it, and write takes a role still.
+    assert.equal((await post(alice, '/alice/paper/settings/visibility', { csrf: aliceCsrf, private: 'false' })).status, 303);
+    const carolView = await getPage(srv.base, '/alice/paper/edit/main.tex', carol);
+    assert.equal(carolView.status, 200);
+    assert.match(carolView.body, /Read only/);
+
+    // Deleting takes the name typed out.
+    assert.equal((await post(alice, '/alice/paper/settings/delete', { csrf: aliceCsrf, confirm: 'paper' })).status, 400);
+    const deleted = await post(alice, '/alice/paper/settings/delete', { csrf: aliceCsrf, confirm: 'alice/paper' });
+    assert.equal(deleted.status, 303);
+    assert.ok(!fs.existsSync(path.join(root, PAPER)));
+    assert.equal((await getPage(srv.base, '/alice/paper', alice)).status, 404);
+  } finally {
+    await srv.stop();
+  }
+});

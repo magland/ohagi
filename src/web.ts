@@ -1,5 +1,6 @@
 import { Express, Request, Response } from 'express';
-import { collectionOwners, canCreateCollection, canCreateRepo, repoAccess } from '../../mochiforge/src/perms';
+import { Role, atLeast, collectionOwners, canCreateCollection, canCreateRepo, removeCollaborator, repoAccess, setCollaborator, setRepoPrivate } from '../../mochiforge/src/perms';
+import { userExists } from '../../mochiforge/src/vault';
 import { Viewer, getViewer } from '../../mochiforge/src/session';
 import { field, requireViewerPage, requireViewerPost, urlencodedForm } from '../../mochiforge/src/web';
 import { Docs } from './docs';
@@ -21,7 +22,9 @@ import {
   projectRole,
   projectUpdated,
   canWrite,
+  deleteProject,
   filesDir,
+  setProjectMeta,
 } from './projects';
 import * as views from './views';
 import * as path from 'path';
@@ -34,8 +37,6 @@ import * as fs from 'fs';
 const form = urlencodedForm('64kb');
 
 export function registerWeb(app: Express, root: string, docs: Docs, editorTag: string): void {
-  void docs;
-
   const notFound = (res: Response, viewer: Viewer | null, message = 'Not found') =>
     res.status(404).type('html').send(views.errorPage(404, message, { viewer }));
 
@@ -162,8 +163,12 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
    * whether it exists; someone signed in who cannot see it gets the 404 an
    * absent project gets, as a private repository does in a vault.
    */
-  function loadProject(req: Request, res: Response): { viewer: Viewer; ref: ProjectRef; writable: boolean } | null {
-    const viewer = requireViewerPage(root, req, res);
+  function loadProject(
+    req: Request,
+    res: Response,
+    post = false
+  ): { viewer: Viewer; ref: ProjectRef; role: Role; writable: boolean } | null {
+    const viewer = post ? requireViewerPost(root, req, res) : requireViewerPage(root, req, res);
     if (!viewer) return null;
     const ref = findProject(root, req.params.collection, req.params.project);
     const role = ref ? projectRole(root, viewer.auth, ref) : null;
@@ -171,7 +176,21 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
       notFound(res, viewer, `Project ${req.params.collection}/${req.params.project} not found`);
       return null;
     }
-    return { viewer, ref, writable: canWrite(role) };
+    return { viewer, ref, role, writable: canWrite(role) };
+  }
+
+  /** As loadProject, and the viewer must hold at least `min` there. */
+  function loadProjectAs(req: Request, res: Response, min: Role, post = false) {
+    const p = loadProject(req, res, post);
+    if (!p) return null;
+    if (!atLeast(p.role, min)) {
+      res
+        .status(403)
+        .type('html')
+        .send(views.errorPage(403, `This takes the ${min} role on ${p.ref.collection}/${p.ref.name}.`, { viewer: p.viewer }));
+      return null;
+    }
+    return p;
   }
 
   function members(ref: ProjectRef): { name: string; role: string }[] {
@@ -224,5 +243,98 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
         editorTag
       )
     );
+  });
+
+  // ---- a project's settings ----
+
+  const settingsUrl = (ref: ProjectRef, msg?: string) =>
+    `${views.projectUrl(ref)}/settings${msg ? `?msg=${encodeURIComponent(msg)}` : ''}`;
+
+  function renderSettings(res: Response, p: { viewer: Viewer; ref: ProjectRef; role: Role }, opts: { msg?: string; error?: string; status?: number } = {}) {
+    const access = repoAccess(p.ref.dir);
+    res
+      .status(opts.status ?? 200)
+      .type('html')
+      .send(
+        views.projectSettingsPage(
+          {
+            ref: p.ref,
+            description: projectMeta(p.ref).description,
+            isPrivate: access.private,
+            canAdmin: atLeast(p.role, 'admin'),
+            collaborators: Object.entries(access.collaborators)
+              .map(([username, role]) => ({ username, role }))
+              .sort((a, b) => a.username.localeCompare(b.username)),
+            owners: collectionOwners(root, p.ref.collection),
+            msg: opts.msg,
+            error: opts.error,
+          },
+          p.viewer
+        )
+      );
+  }
+
+  app.get('/:collection/:project/settings', (req, res) => {
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    renderSettings(res, p, { msg: typeof req.query.msg === 'string' ? req.query.msg : undefined });
+  });
+
+  app.post('/:collection/:project/settings', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'write', true);
+    if (!p) return;
+    const description = field(req, 'description').trim();
+    if (description.length > 400 || /[\r\n]/.test(description)) {
+      renderSettings(res, p, { error: 'The description must be one line of at most 400 characters.', status: 400 });
+      return;
+    }
+    setProjectMeta(p.ref, { ...projectMeta(p.ref), description });
+    res.redirect(303, settingsUrl(p.ref, 'Saved.'));
+  });
+
+  app.post('/:collection/:project/settings/visibility', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const priv = field(req, 'private') === 'true';
+    setRepoPrivate(p.ref.dir, priv);
+    res.redirect(303, settingsUrl(p.ref, priv ? 'The project is now private.' : 'The project is now public.'));
+  });
+
+  app.post('/:collection/:project/settings/collaborators', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const username = field(req, 'username').trim();
+    const role = field(req, 'role');
+    if (role !== 'read' && role !== 'write' && role !== 'admin') {
+      renderSettings(res, p, { error: 'Choose read, write, or admin.', status: 400 });
+      return;
+    }
+    if (!userExists(root, username)) {
+      renderSettings(res, p, { error: `There is no user ${username} on this shelf.`, status: 404 });
+      return;
+    }
+    setCollaborator(p.ref.dir, username, role);
+    res.redirect(303, settingsUrl(p.ref, `${username} now has the ${role} role.`));
+  });
+
+  app.post('/:collection/:project/settings/collaborators/remove', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const username = field(req, 'username').trim();
+    removeCollaborator(p.ref.dir, username);
+    res.redirect(303, settingsUrl(p.ref, `Removed ${username}.`));
+  });
+
+  app.post('/:collection/:project/settings/delete', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const name = `${p.ref.collection}/${p.ref.name}`;
+    if (field(req, 'confirm').trim() !== name) {
+      renderSettings(res, p, { error: `Type ${name} exactly to confirm deletion.`, status: 400 });
+      return;
+    }
+    docs.dropProject(p.ref.dir);
+    deleteProject(p.ref);
+    res.redirect(303, views.collectionUrl(p.ref.collection));
   });
 }

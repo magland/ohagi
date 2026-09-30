@@ -55,7 +55,7 @@ export interface ProjectCard {
 function projectCard(p: ProjectCard, showCollection: boolean): Html {
   const prefix = showCollection ? html`<span class="rc-collection">${p.collection}/</span>` : '';
   const desc = p.description ? html`<p class="rc-desc">${p.description}</p>` : '';
-  const badge = p.isPrivate ? '' : html`<span class="counter" title="Anyone can read this project">Public</span>`;
+  const badge = p.isPrivate ? '' : html`<span class="counter" title="Anyone signed in can read this project">Public</span>`;
   return html`<li class="repo-card">
 <div class="rc-top"><a class="rc-name" href="${projectUrl(p)}">${prefix}${p.name}</a>${badge}</div>
 ${desc}
@@ -142,10 +142,20 @@ export interface ProjectView {
   msg?: string;
 }
 
+/** The project's tabs, as a repository's are under its title in a vault. */
+function projectTabs(ref: ProjectRef, active: 'files' | 'settings', canSettings: boolean): Html {
+  const tab = (id: string, label: string, href: string, glyph: 'file' | 'sliders') =>
+    html`<a class="tab${active === id ? ' active' : ''}" href="${href}">${icon(glyph)}<span>${label}</span></a>`;
+  return html`<nav class="tabs">
+${tab('files', 'Files', projectUrl(ref), 'file')}
+${canSettings ? tab('settings', 'Settings', `${projectUrl(ref)}/settings`, 'sliders') : ''}
+</nav>`;
+}
+
 function projectTitle(ref: ProjectRef, isPrivate: boolean): Html {
   const badge = isPrivate
     ? html` <span class="counter" title="Only its members, its collection's owners, and site admins can see this project">Private</span>`
-    : html` <span class="counter" title="Anyone can read this project">Public</span>`;
+    : html` <span class="counter" title="Anyone signed in can read this project">Public</span>`;
   return html`<div class="repo-title">${icon('book')}<a href="${collectionUrl(ref.collection)}">${ref.collection}</a> <span class="muted">/</span> <a href="${projectUrl(
     ref
   )}"><b>${ref.name}</b></a>${badge}</div>`;
@@ -176,6 +186,7 @@ export function projectPage(view: ProjectView, viewer: Viewer | null, baseUrl: s
   const clone = html`<div class="side-block"><h3>Files on disk</h3><p class="muted small">This project's files are plain files in the shelf. Cloning them with git comes later.</p></div>`;
   void baseUrl;
   const content = html`${projectTitle(ref, view.isPrivate)}
+${projectTabs(ref, 'files', view.canWrite)}
 ${flash(view.msg)}
 <div class="toolbar"><div class="left"><span class="muted small">${view.files.length} file${view.files.length === 1 ? '' : 's'}</span></div><div class="right-group">${openBtn}</div></div>
 <div class="repo-layout">
@@ -189,6 +200,98 @@ ${clone}
 </aside>
 </div>`;
   return page(`${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: projectUrl(ref) });
+}
+
+// ---- a project's settings ----
+
+export interface SettingsView {
+  ref: ProjectRef;
+  description: string;
+  isPrivate: boolean;
+  canAdmin: boolean;
+  collaborators: { username: string; role: string }[];
+  owners: string[];
+  msg?: string;
+  error?: string;
+}
+
+export function projectSettingsPage(view: SettingsView, viewer: Viewer): string {
+  const { ref } = view;
+  const base = projectUrl(ref);
+  const general = html`<div class="box settings-box" id="general"><div class="box-header">${icon('sliders')}General</div><div class="box-body">
+<form method="post" action="${base}/settings">
+${csrfField(viewer)}
+<div class="field"><label for="description">Description</label><input type="text" id="description" name="description" value="${view.description}"><p class="muted small">Shown beside the project in listings and in its About panel.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`;
+  const collaboratorRows = view.collaborators.map(
+    ({ username, role }) => html`<tr><td class="with-avatar">${userLink(username, { face: 24, bold: true })}</td><td class="muted">${role}</td><td class="right">
+<form method="post" action="${base}/settings/collaborators/remove" class="inline-form">
+${csrfField(viewer)}
+<input type="hidden" name="username" value="${username}">
+<button type="submit" class="btn btn-danger-outline">Remove</button>
+</form></td></tr>`
+  );
+  const ownersNote = view.owners.length
+    ? html`<p class="muted small">Owners of <span class="mono">${ref.collection}</span> (${joinHtml(
+        view.owners.map((o) => html`<b>${o}</b>`),
+        ', '
+      )}, and the user the collection is named after) hold the admin role here without being listed.</p>`
+    : html`<p class="muted small">The user the collection is named after, and any owners added to it, hold the admin role here without being listed.</p>`;
+  const access = view.canAdmin
+    ? html`<div class="box settings-box" id="access"><div class="box-header">${icon('people')}Access</div><div class="box-body">
+<form method="post" action="${base}/settings/visibility">
+${csrfField(viewer)}
+<input type="hidden" name="private" value="${view.isPrivate ? 'false' : 'true'}">
+<p>${
+        view.isPrivate
+          ? html`This project is <b>private</b>: seen by its collaborators, the collection's owners, and site admins, and by nobody else.`
+          : html`This project is <b>public</b>: anyone signed in to this shelf can read it. Only its collaborators and owners can change it.`
+      }</p>
+<button type="submit" class="btn">${view.isPrivate ? 'Make public' : 'Make private'}</button>
+</form>
+<hr class="rule">
+<h3>Collaborators</h3>
+${
+        collaboratorRows.length
+          ? html`<table class="listing"><tbody><tr><th>User</th><th>Role</th><th class="right"></th></tr>${collaboratorRows}</tbody></table>`
+          : html`<p class="muted">No collaborators.</p>`
+      }
+${ownersNote}
+<form method="post" action="${base}/settings/collaborators" class="inline-form">
+${csrfField(viewer)}
+<label for="collabUser">User</label><input type="text" id="collabUser" name="username" required>
+<label for="collabRole">Role</label><select id="collabRole" name="role">
+<option value="read">read</option>
+<option value="write" selected>write</option>
+<option value="admin">admin</option>
+</select>
+<button type="submit" class="btn">${icon('people')}<span>Add</span></button>
+</form>
+<p class="muted small">read may open the project and follow along; write may also edit its files; admin may also change its settings and who is on it.</p>
+</div></div>`
+    : '';
+  const danger = view.canAdmin
+    ? html`<div class="danger-zone">
+<h3>Danger zone</h3>
+<p>Deleting a project removes its directory from the shelf permanently, files and history alike. There is no undo.</p>
+<form method="post" action="${base}/settings/delete">
+${csrfField(viewer)}
+<div class="field"><label for="confirm">Type <b class="mono">${ref.collection}/${ref.name}</b> to confirm</label><input type="text" id="confirm" name="confirm" autocomplete="off"></div>
+<button type="submit" class="btn btn-danger">${icon('trash')}<span>Delete this project</span></button>
+</form>
+</div>`
+    : '';
+  const content = html`${projectTitle(ref, view.isPrivate)}
+${projectTabs(ref, 'settings', true)}
+<h2>Settings</h2>
+${flash(view.msg)}
+${formError(view.error)}
+${general}
+${access}
+${danger}`;
+  return page(`Settings - ${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: `${base}/settings` });
 }
 
 // ---- the editor ----

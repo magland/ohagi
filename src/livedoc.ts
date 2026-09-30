@@ -76,6 +76,8 @@ export type DocEvent =
 export interface Subscriber {
   clientID: string;
   send(event: DocEvent): void;
+  /** End the stream, when the document goes away under it. */
+  end?(): void;
 }
 
 /** The page's history is not this one; it should reconnect and will be sent the whole text. */
@@ -316,6 +318,15 @@ export class LiveDoc {
       writeAtomic(this.logFile, lines.map((l) => l + '\n').join(''));
       this.logLines = lines.length;
     }
+  }
+
+  /** Stop: no further writes, and every open stream is ended. For a project being deleted. */
+  close(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    this.flushedVersion = this.version;
+    for (const s of [...this.subscribers]) s.end?.();
+    this.subscribers.clear();
   }
 
   get dirty(): boolean {
