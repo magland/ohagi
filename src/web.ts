@@ -20,6 +20,7 @@ import { userExists } from '../../mochiforge/src/vault';
 import { Viewer, getViewer } from '../../mochiforge/src/session';
 import { field, requireViewerPage, requireViewerPost, urlencodedForm } from '../../mochiforge/src/web';
 import { Docs } from './docs';
+import { History } from './history';
 import {
   ProjectError,
   ProjectRef,
@@ -59,7 +60,7 @@ import * as fs from 'fs';
 
 const form = urlencodedForm('64kb');
 
-export function registerWeb(app: Express, root: string, docs: Docs, editorTag: string): void {
+export function registerWeb(app: Express, root: string, docs: Docs, history: History, editorTag: string): void {
   const notFound = (res: Response, viewer: Viewer | null, message = 'Not found') =>
     res.status(404).type('html').send(views.errorPage(404, message, { viewer }));
 
@@ -429,6 +430,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
       return;
     }
     docs.dropProject(p.ref.dir);
+    history.forget(p.ref.dir);
     deleteProject(p.ref);
     res.redirect(303, views.collectionUrl(p.ref.collection));
   });
@@ -451,6 +453,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
     const rel = field(req, 'path').trim();
     try {
       const clean = writeFile(p.ref, rel, Buffer.alloc(0), { overwrite: false });
+      history.touched(p.ref, p.viewer.auth.username);
       res.redirect(303, views.fileUrl(p.ref, clean));
     } catch (e) {
       if (!(e instanceof ProjectError)) throw e;
@@ -504,6 +507,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
         const clean = writeFile(p.ref, rel, f.data, { overwrite: true });
         // Someone editing the file takes its new text.
         docs.peek(p.ref, clean)?.reloadFromDisk();
+        history.touched(p.ref, p.viewer.auth.username);
         written.push(clean);
       }
     } catch (e) {
@@ -535,6 +539,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
       // and its history move with the file.
       docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: views.fileUrl(p.ref, dest) });
       const moved = renameFile(p.ref, from, dest);
+      history.touched(p.ref, p.viewer.auth.username);
       res.redirect(303, projectPath(p.ref, `Renamed ${moved.from} to ${moved.to}.`));
     } catch (e) {
       if (!(e instanceof ProjectError)) throw e;
@@ -556,6 +561,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
     if (!fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
     docs.closeFile(p.ref, rel, { type: 'closed', reason: 'deleted' });
     const gone = removeFile(p.ref, rel);
+    history.touched(p.ref, p.viewer.auth.username);
     res.redirect(303, projectPath(p.ref, `Deleted ${gone}.`));
   });
 

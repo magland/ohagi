@@ -9,6 +9,7 @@ import { Server } from 'http';
 import { createApp } from '../src/server';
 import { Docs } from '../src/docs';
 import { Compiler } from '../src/compile';
+import { History } from '../src/history';
 import { EXAMPLE_TOKENS, createExample } from '../scripts/create-example';
 
 // The command line against a running shelf, as a person or a script uses it,
@@ -21,7 +22,7 @@ async function serve(): Promise<{ root: string; base: string; stop(): Promise<vo
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-cli-'));
   createExample(root);
   const docs = new Docs();
-  const app = createApp(root, docs, new Compiler());
+  const app = createApp(root, docs, new Compiler(), new History(docs));
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
@@ -212,6 +213,59 @@ test('backup copies a shelf over HTTP, without what a compile left', async () =>
     assert.ok(!fs.existsSync(path.join(current, 'collections/alice/projects/paper/build')), 'build/ is left out');
     const verify = await cli(srv.base, EXAMPLE_TOKENS.dev, ['backup', 'verify', dir]);
     assert.equal(verify.code, 0, verify.stdout + verify.stderr);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('git clone of a project: members only, read-only, and current', async () => {
+  const srv = await serve();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-clone-'));
+  const git = (args: string[], cwd = tmp) =>
+    new Promise<{ code: number; out: string }>((resolve) =>
+      execFile('git', args, { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_GLOBAL: '/dev/null' } }, (err, stdout, stderr) =>
+        resolve({ code: err ? 1 : 0, out: stdout + stderr })
+      )
+    );
+  const url = (user: keyof typeof EXAMPLE_TOKENS, project = 'alice/paper') =>
+    srv.base.replace('http://', `http://${user}:${EXAMPLE_TOKENS[user]}@`) + `/${project}`;
+  try {
+    // bob edits main.tex through the file API, then carol, who reads, clones.
+    const put = await fetch(`${srv.base}/api/projects/alice/paper/raw?path=main.tex&overwrite=1`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${EXAMPLE_TOKENS.bob}`, 'Content-Type': 'application/octet-stream' },
+      body: '\\documentclass{article}\\begin{document}Edited by bob.\\end{document}\n',
+    });
+    assert.equal(put.status, 200);
+    const cloned = await git(['clone', '-q', url('carol'), 'paper']);
+    assert.equal(cloned.code, 0, cloned.out);
+    assert.match(fs.readFileSync(path.join(tmp, 'paper/main.tex'), 'utf8'), /Edited by bob\./);
+    assert.ok(fs.existsSync(path.join(tmp, 'paper/refs.bib')));
+    const log = await git(['log', '--format=%an|%s'], path.join(tmp, 'paper'));
+    assert.match(log.out.split('\n')[0], /^bob\|Edits by bob$/);
+
+    // A push is refused, with a sentence.
+    fs.writeFileSync(path.join(tmp, 'paper/new.tex'), 'x');
+    await git(['-c', 'user.name=c', '-c', 'user.email=c@x', 'commit', '-qam', 'try'], path.join(tmp, 'paper'));
+    await git(['add', '.'], path.join(tmp, 'paper'));
+    const pushed = await git(['push', '-q', 'origin', 'HEAD'], path.join(tmp, 'paper'));
+    assert.notEqual(pushed.code, 0);
+    assert.match(pushed.out, /read-only/);
+
+    // alice is not on lab/proposal: it answers as if absent. No credential: git is asked for one.
+    const stranger = await git(['clone', '-q', url('alice', 'lab/proposal'), 'proposal']);
+    assert.notEqual(stranger.code, 0);
+    assert.match(stranger.out, /not found/);
+    const anon = await git(['clone', '-q', `${srv.base}/alice/paper`, 'anon']);
+    assert.notEqual(anon.code, 0);
+
+    // A pull after more editing brings it.
+    fs.writeFileSync(path.join(srv.root, 'collections/alice/projects/paper/files/results.tex'), 'Newer results.\n');
+    await git(['reset', '-q', '--hard', 'origin/main'], path.join(tmp, 'paper'));
+    await git(['clean', '-qfd'], path.join(tmp, 'paper'));
+    const again = await git(['pull', '-q', '--ff-only'], path.join(tmp, 'paper'));
+    assert.equal(again.code, 0, again.out);
+    assert.equal(fs.readFileSync(path.join(tmp, 'paper/results.tex'), 'utf8'), 'Newer results.\n');
   } finally {
     await srv.stop();
   }

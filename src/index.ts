@@ -79,9 +79,11 @@ async function serveCmd(args: string[], usage: () => never) {
   const { createApp } = await import('./server');
   const { Docs } = await import('./docs');
   const { Compiler } = await import('./compile');
+  const { History } = await import('./history');
   const docs = new Docs();
   const compiler = new Compiler();
-  const app = createApp(root, docs, compiler);
+  const history = new History(docs, () => host);
+  const app = createApp(root, docs, compiler, history);
   process.on('uncaughtException', (err) => {
     console.error('uncaught exception (the server continues):', err);
   });
@@ -119,7 +121,8 @@ async function serveCmd(args: string[], usage: () => never) {
     clearInterval(idle);
     docs.flushAll();
     server.close();
-    process.exit(0);
+    // What was edited since the last commit is committed on the way out.
+    void history.commitAll().finally(() => process.exit(0));
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);

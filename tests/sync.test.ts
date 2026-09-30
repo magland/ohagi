@@ -10,6 +10,7 @@ import { collab, getClientID, getSyncedVersion, sendableUpdates } from '@codemir
 import { createApp } from '../src/server';
 import { Docs } from '../src/docs';
 import { Compiler } from '../src/compile';
+import { History } from '../src/history';
 import { LiveDoc } from '../src/livedoc';
 import { ProjectRef, findProject } from '../src/projects';
 import { Peer, Sync } from '../client/sync';
@@ -40,7 +41,7 @@ function liveDoc(srv: { docs: Docs; root: string }): LiveDoc {
 
 async function serve(root: string, port = 0): Promise<{ server: Server; docs: Docs; root: string; base: string; stop(): Promise<void> }> {
   const docs = new Docs();
-  const app = createApp(root, docs, new Compiler());
+  const app = createApp(root, docs, new Compiler(), new History(docs));
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(port, '127.0.0.1', () => resolve(s));
   });

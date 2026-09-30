@@ -257,8 +257,7 @@ export function projectPage(view: ProjectView, viewer: Viewer | null, baseUrl: s
   const description = view.meta.description
     ? html`<p class="side-desc">${view.meta.description}</p>`
     : html`<p class="side-desc muted">No description provided.</p>`;
-  const clone = html`<div class="side-block"><h3>Files on disk</h3><p class="muted small">This project's files are plain files in the shelf. Cloning them with git comes later.</p></div>`;
-  void baseUrl;
+  const clone = html`<div class="side-block"><h3>Clone</h3>${copyRow(`git clone ${baseUrl}${projectUrl(ref)}`)}<p class="muted small">Read-only: edits are made here, and a pull brings them. git asks for your username and a token; <span class="mono">ohagi login</span> stores one for it.</p></div>`;
   const content = html`${projectTitle(ref, view.isPrivate)}
 ${projectTabs(ref, 'files', view.canWrite)}
 ${flash(view.msg)}

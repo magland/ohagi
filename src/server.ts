@@ -17,6 +17,8 @@ import { setActiveTheme } from '../../mochiforge/src/themes';
 import { registerApi } from './api';
 import { Compiler } from './compile';
 import { Docs } from './docs';
+import { registerGitHttp } from './githttp';
+import { History } from './history';
 import { faviconSvg } from './logo';
 import { listCollectionNames, listProjectNames, projectDir, projectRole, removeUserGrants } from './projects';
 import { setNaming } from '../../mochiforge/src/naming';
@@ -54,7 +56,7 @@ function isRateExempt(req: Request): boolean {
 
 // An editor's event stream must reach the page as it is written; compression
 // would buffer it. The sync pushes are small and gain nothing either.
-const UNCOMPRESSED = /^\/api\/projects\/[^/]+\/[^/]+\/(events|push|presence|output\.pdf)$|^\/api\/backup\//;
+const UNCOMPRESSED = /^\/api\/projects\/[^/]+\/[^/]+\/(events|push|presence|output\.pdf)$|^\/api\/backup\/|^\/[^/]+\/[^/]+\/(info\/refs|git-upload-pack)$/;
 
 function isCompressible(req: Request, res: Response): boolean {
   if (UNCOMPRESSED.test(req.path)) return false;
@@ -82,7 +84,7 @@ function loadBuilt(file: string): Built {
   return { body, tag: createHash('sha256').update(body).digest('hex').slice(0, 12) };
 }
 
-export function createApp(root: string, docs: Docs, compiler: Compiler, staticDir = findStaticDir()) {
+export function createApp(root: string, docs: Docs, compiler: Compiler, history: History, staticDir = findStaticDir()) {
   const app = express();
   app.disable('x-powered-by');
   app.set('query parser', 'simple');
@@ -176,7 +178,10 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, staticDi
       result: { status: r.status, main: r.main, errors: r.errors, warnings: r.warnings, pdf: r.pdf, durationMs: r.durationMs, finished: r.finished },
     });
   });
-  registerApi(app, root, authLimiter, docs, compiler);
+  registerApi(app, root, authLimiter, docs, compiler, history);
+  // git clone of a project, at the project's address; before the page routes,
+  // whose /:collection/:project patterns would otherwise answer first.
+  registerGitHttp(app, root, authLimiter, history);
   // Who the caller is, the users, and their tokens: mochi's own routes, so
   // mochi's user commands work against a shelf as they do against a vault.
   registerUsersApi(app, root, authLimiter, { removeUserGrants });
@@ -185,7 +190,7 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, staticDi
   // the same ones a vault serves.
   registerAccountWeb(app, root, authLimiter);
   registerAdminWeb(app, root, { removeUserGrants });
-  registerWeb(app, root, docs, editorJs.tag);
+  registerWeb(app, root, docs, history, editorJs.tag);
 
   app.use((req, res) => {
     res.status(404).type('html').send(errorPage(404, 'Page not found', { viewer: getViewer(req, root) }));

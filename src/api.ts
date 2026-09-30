@@ -23,6 +23,7 @@ import { checkCsrf, getViewer } from '../../mochiforge/src/session';
 import { AuthResult } from '../../mochiforge/src/vault';
 import { Compiler, pdfPath } from './compile';
 import { DocNotFound, Docs } from './docs';
+import { History } from './history';
 import { DocEvent, LiveDoc, PushRefused } from './livedoc';
 import { fileUrl } from './views';
 import {
@@ -69,7 +70,7 @@ interface Access {
   doc: LiveDoc;
 }
 
-export function registerApi(app: Express, root: string, limiter: AuthLimiter, docs: Docs, compiler: Compiler): void {
+export function registerApi(app: Express, root: string, limiter: AuthLimiter, docs: Docs, compiler: Compiler, history: History): void {
 
   /** The caller, by bearer token or by session; null having answered. */
   function caller(req: Request, res: Response, write: boolean): AuthResult | null {
@@ -129,7 +130,9 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       return;
     }
     try {
-      res.json(a.doc.push(epoch, version, updates));
+      const result = a.doc.push(epoch, version, updates);
+      if (result.accepted && updates.length) history.touched(a.ref, a.auth.username, updates.length);
+      res.json(result);
     } catch (e) {
       if (e instanceof PushRefused) apiError(res, 409, 'history moved on; reconnect');
       else apiError(res, 400, (e as Error).message);
@@ -345,6 +348,7 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       return;
     }
     docs.dropProject(p.ref.dir);
+    history.forget(p.ref.dir);
     deleteProject(p.ref);
     res.json({ deleted: full });
   });
@@ -416,6 +420,7 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     try {
       const clean = writeFile(p.ref, pathParam(req), data, { overwrite: req.query.overwrite === '1' });
       docs.peek(p.ref, clean)?.reloadFromDisk();
+      history.touched(p.ref, p.auth.username);
       res.json({ path: clean, size: data.length });
     } catch (e) {
       sendProjectError(res, e);
@@ -428,7 +433,9 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     try {
       if (!fileExists(p.ref, pathParam(req))) throw new ProjectError(`There is no file ${pathParam(req)}.`, 'missing');
       docs.closeFile(p.ref, pathParam(req), { type: 'closed', reason: 'deleted' });
-      res.json({ deleted: removeFile(p.ref, pathParam(req)) });
+      const gone = removeFile(p.ref, pathParam(req));
+      history.touched(p.ref, p.auth.username);
+      res.json({ deleted: gone });
     } catch (e) {
       sendProjectError(res, e);
     }
@@ -445,7 +452,9 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       if (!dest) throw new ProjectError(`Not a usable file name: ${to || '(empty)'}.`);
       if (dest !== from && fileExists(p.ref, dest)) throw new ProjectError(`${dest} already exists.`, 'exists');
       docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: fileUrl(p.ref, dest) });
-      res.json(renameFile(p.ref, from, dest));
+      const moved = renameFile(p.ref, from, dest);
+      history.touched(p.ref, p.auth.username);
+      res.json(moved);
     } catch (e) {
       sendProjectError(res, e);
     }
