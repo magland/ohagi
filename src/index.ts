@@ -1,38 +1,114 @@
 #!/usr/bin/env node
+import './branding';
 import * as fs from 'fs';
 import * as path from 'path';
-import { createApp, findStaticDir } from './server';
-import { Shelf } from './shelf';
+import * as readline from 'readline';
+import { api, request } from '../../mochiforge/src/cli-api';
+import { normalizeApiPath } from '../../mochiforge/src/cli/api-cmd';
+import { CliError, EXIT_FAIL, EXIT_USAGE, exitCodeForStatus } from '../../mochiforge/src/cli/exit';
+import { readFileArg, readStdin } from '../../mochiforge/src/cli/input';
+import { JSON_OPTION, jsonMode, pickObject, printJson } from '../../mochiforge/src/cli/output';
+import { Cli, Command, Invocation, dispatch } from '../../mochiforge/src/cli/parse';
+import { TARGET_OPTIONS, targetFrom } from '../../mochiforge/src/cli/target';
+import {
+  approveCredential,
+  clearLogin,
+  configuredHelper,
+  credentialTarget,
+  loginPath,
+  readCredential,
+  rejectCredential,
+  saveLogin,
+  setHelper,
+} from '../../mochiforge/src/credentials';
+import { resetTokenCmd, resetTokenHelp } from '../../mochiforge/src/reset-token-cli';
+import { bootstrapVault } from '../../mochiforge/src/vault';
 
-// The ohagi command. For now only `serve`; the rest of the CLI (users,
-// projects, login, deploy, backup) comes from mochiforge's framework, as
-// dango's does.
+// The ohagi command: serve a shelf, or talk to a served one the way `mochi`
+// talks to a vault. Built on mochiforge's CLI framework, so the option
+// grammar, the exit codes, the credential store, and --json behave exactly
+// as the mochi command's do.
 
-const USAGE = `Usage: ohagi serve <shelf> [--port 3000] [--host 127.0.0.1]`;
+const FOOTER = `Configuration:
+  ohagi login https://tex.example.com   once, then the rest need no arguments
 
-function serve(args: string[]): void {
+The shelf URL is kept in ~/.config/ohagi/login.json and the token in git's own
+credential store. --host and --token override either for a single command, and
+OHAGI_HOST and OHAGI_TOKEN sit between the two.
+
+Shelf layout:
+  <shelf>/shelf.json                          users and hashed tokens (server-managed)
+  <shelf>/config.json                         settings: theme, limits
+  <shelf>/collections/<c>/projects/<p>/files/ a project's files, plain files on disk
+
+Everything is plain files, so on a machine you have a shell on, backup is cp -a.`;
+
+// ---- serve ----
+
+async function serveCmd(args: string[], usage: () => never) {
   let dir: string | null = null;
   let port = 3000;
   let host = '127.0.0.1';
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
-    if (a === '-p' || a === '--port') port = parseInt(args[++i], 10);
+    if (a === '-h' || a === '--help') usage();
+    else if (a === '-p' || a === '--port') port = parseInt(args[++i], 10);
     else if (a === '--host') host = args[++i];
-    else if (a.startsWith('-')) fail(`Unknown option: ${a}`);
+    else if (a.startsWith('-')) throw new CliError(`Unknown option: ${a}`, EXIT_USAGE);
     else dir = a;
   }
-  if (!dir) fail(USAGE);
-  const root = path.resolve(dir);
-  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) fail(`Shelf directory does not exist: ${root}`);
-  const shelf = new Shelf(root);
-  const app = createApp(shelf, findStaticDir());
-  const server = app.listen(port, host, () => {
-    console.log(`ohagi serving ${root} at http://${host}:${port}`);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new CliError('Invalid port', EXIT_USAGE);
+  const root = path.resolve(dir ?? process.env.OHAGI_SHELF ?? '.');
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    throw new CliError(`Shelf directory does not exist: ${root}`);
+  }
+  try {
+    fs.accessSync(root, fs.constants.W_OK);
+  } catch {
+    throw new CliError(`This process cannot write to the shelf directory ${root}.`);
+  }
+  // A shelf with no shelf.json is initialized on first start, as a vault is:
+  // the owner token is minted and printed once, or supplied through
+  // OHAGI_OWNER_TOKEN and then not printed at all.
+  const boot = bootstrapVault(root, process.env.OHAGI_OWNER_TOKEN ?? null);
+  // Imported here rather than at the top, for mochi's reason: a command that
+  // is not starting the server should not pay for loading it.
+  const { createApp } = await import('./server');
+  const { Docs } = await import('./docs');
+  const docs = new Docs();
+  const app = createApp(root, docs);
+  process.on('uncaughtException', (err) => {
+    console.error('uncaught exception (the server continues):', err);
   });
-  const idle = setInterval(() => shelf.unloadIdle(), 60_000);
+  process.on('unhandledRejection', (reason) => {
+    console.error('unhandled rejection (the server continues):', reason);
+  });
+  const server = app.listen(port, host, () => {
+    const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
+    if (boot && boot.preset) {
+      console.log('');
+      console.log('Initialized a new shelf (no shelf.json found).');
+      console.log(`Owner '${boot.username}' was given the token from OHAGI_OWNER_TOKEN, so it is not repeated here.`);
+      console.log('');
+    } else if (boot) {
+      console.log('');
+      console.log('Initialized a new shelf (no shelf.json found).');
+      console.log(`Owner token for user '${boot.username}' (shown once; only its hash is stored):`);
+      console.log('');
+      console.log(`  ${boot.token}`);
+      console.log('');
+      console.log('Sign in on the web with it, or from the command line:');
+      console.log(`  ohagi login ${url}`);
+      console.log('');
+    }
+    console.log(`ohagi serving shelf ${root}`);
+    console.log(`  ${url}`);
+  });
+  // Open files are written when they go idle, and all of them on the way out.
+  const idle = setInterval(() => docs.unloadIdle(), 60_000);
   const stop = () => {
     clearInterval(idle);
-    shelf.flushAll();
+    docs.flushAll();
     server.close();
     process.exit(0);
   };
@@ -40,11 +116,162 @@ function serve(args: string[]): void {
   process.on('SIGTERM', stop);
 }
 
-function fail(msg: string): never {
-  console.error(msg);
-  process.exit(2);
+// ---- login and logout ----
+
+function promptToken(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
-if (cmd === 'serve') serve(rest);
-else fail(USAGE);
+async function loginCmd(inv: Invocation) {
+  const given = inv.args[0] ?? inv.str('host');
+  if (!given) throw new CliError('Usage: ohagi login <url>', EXIT_USAGE);
+  const target = credentialTarget(given);
+  const host = target.url;
+
+  const chosen = inv.str('helper');
+  if (chosen) await setHelper(target.url, chosen);
+  const helper = await configuredHelper(target.url);
+  if (!helper) {
+    console.error(`No credential helper is configured for ${target.url}, so git has nowhere to keep a token.`);
+    console.error('Choose where the token should live and run login again:');
+    console.error('  ohagi login --helper store        a file at ~/.git-credentials, in plain text');
+    console.error('  ohagi login --helper cache        memory only, forgotten after 15 minutes');
+    console.error('  ohagi login --helper libsecret    the desktop keyring, on Linux');
+    console.error('  ohagi login --helper osxkeychain  the login keychain, on macOS');
+    process.exit(EXIT_FAIL);
+  }
+
+  let token = inv.str('token');
+  if (inv.bool('token-stdin')) token = (await readStdin()).trim();
+  if (!token) token = await promptToken(`Token for ${target.url}: `);
+  if (!token) throw new CliError('No token given.', EXIT_USAGE);
+
+  // Verified before it is stored: a token that does not work is worse stored than absent.
+  const who = await api({ host, token }, 'GET', '/api/whoami');
+  const username = String(who.username ?? '');
+  if (!username) throw new CliError(`${host} did not say who this token belongs to.`);
+
+  await approveCredential(target, username, token);
+  const stored = await readCredential(target);
+  if (!stored || stored.password !== token) {
+    console.error(`The credential helper '${helper}' did not keep the token for ${target.url}.`);
+    process.exit(EXIT_FAIL);
+  }
+  saveLogin(host);
+  console.log(`Stored the token for '${username}' at ${target.url} (helper: ${helper}).`);
+  console.log(`ohagi commands talk to it by default (${loginPath()}). Run 'ohagi logout' to remove it.`);
+}
+
+async function logoutCmd(inv: Invocation) {
+  const given = inv.args[0] ?? inv.str('host');
+  const host = given ?? process.env.OHAGI_HOST ?? null;
+  if (!host) throw new CliError('Usage: ohagi logout <url> (or log in first, so there is a default)', EXIT_USAGE);
+  const target = credentialTarget(host);
+  await rejectCredential(target);
+  clearLogin(target.url);
+  console.log(`Forgot the token for ${target.url}.`);
+}
+
+// ---- the registry ----
+
+const commands: Command[] = [
+  {
+    path: ['serve'],
+    summary: 'Serve a shelf directory over HTTP',
+    description: `Initializes the directory as a shelf on first start, printing the owner
+token once. Options: -p/--port <n> (default 3000), --host <addr> (default
+127.0.0.1; use 0.0.0.0 behind a proxy).`,
+    raw: true,
+    args: [{ name: 'dir' }],
+    run(inv) {
+      return serveCmd(inv.argv, inv.help);
+    },
+  },
+  {
+    path: ['login'],
+    summary: 'Store a token for a shelf and make it the default',
+    args: [{ name: 'url' }],
+    options: [
+      ...TARGET_OPTIONS,
+      { name: 'helper', type: 'string', value: '<h>', summary: 'Configure this git credential helper first' },
+    ],
+    run: loginCmd,
+  },
+  {
+    path: ['logout'],
+    summary: 'Forget the stored token for a shelf',
+    args: [{ name: 'url' }],
+    options: [{ name: 'host', type: 'string', value: '<url>', summary: 'Shelf URL when not given as an argument' }],
+    run: logoutCmd,
+  },
+  {
+    path: ['whoami'],
+    summary: 'Say who the current token belongs to',
+    options: [...TARGET_OPTIONS, JSON_OPTION],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const data = await api(target, 'GET', '/api/whoami');
+      const json = jsonMode(inv);
+      if (json.enabled) printJson(pickObject(data, json.fields));
+      else console.log(`${data.username} @ ${target.host}${data.siteAdmin ? ' (site admin)' : ''}`);
+    },
+  },
+  {
+    path: ['api'],
+    summary: 'Call any route of the shelf JSON API and print what it answers',
+    args: [{ name: 'path', required: true }],
+    options: [
+      { name: 'method', short: 'X', type: 'string', value: '<m>', summary: 'HTTP method (default GET, POST with a body)' },
+      { name: 'input', type: 'string', value: '<file>', summary: "JSON body from a file, or '-' for stdin" },
+      { name: 'include', short: 'i', type: 'boolean', summary: 'Print the status and content type to stderr' },
+      ...TARGET_OPTIONS,
+    ],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const pathname = normalizeApiPath(inv.args[0]);
+      const input = inv.str('input');
+      const body = input ? await readFileArg(input) : undefined;
+      const method = (inv.str('method') ?? (body === undefined ? 'GET' : 'POST')).toUpperCase();
+      const r = await request(target, method, pathname, { body });
+      if (inv.bool('include')) {
+        process.stderr.write(`HTTP ${r.status}\n`);
+        if (r.contentType) process.stderr.write(`content-type: ${r.contentType}\n\n`);
+      }
+      const out = r.body.endsWith('\n') || r.body === '' ? r.body : r.body + '\n';
+      if (!r.ok) {
+        process.stderr.write(out);
+        process.exit(exitCodeForStatus(r.status));
+      }
+      process.stdout.write(out);
+    },
+  },
+  {
+    path: ['reset-token'],
+    summary: 'Give a user a new token by editing the shelf on disk, when the old one is lost',
+    description: resetTokenHelp(),
+    raw: true,
+    run: (inv) => resetTokenCmd(inv.argv, () => inv.help()),
+  },
+];
+
+const cli: Cli = {
+  name: 'ohagi',
+  groups: [],
+  commands,
+  footer: FOOTER,
+};
+
+async function main() {
+  await dispatch(cli, process.argv.slice(2));
+}
+
+main().catch((e) => {
+  console.error(e instanceof Error ? e.message : String(e));
+  process.exit(e instanceof CliError ? e.code : EXIT_FAIL);
+});

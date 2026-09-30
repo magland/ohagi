@@ -22,7 +22,9 @@ import { collab, getClientID } from '@codemirror/collab';
 import { Peer, Status, Sync } from './sync';
 
 // The editor page: CodeMirror 6 with the collab extension, synced through
-// sync.ts, and the other people in the file drawn as coloured cursors.
+// sync.ts, and the other people in the file drawn as coloured cursors. Who
+// is typing is the signed-in user; the page carries their CSRF value and
+// whether they may write, and the server holds both to account again.
 
 // ---- remote cursors ----
 
@@ -111,22 +113,6 @@ function colorFor(name: string): string {
 
 // ---- the page ----
 
-function myName(): string {
-  let name = '';
-  try {
-    name = localStorage.getItem('ohagi-name') ?? '';
-  } catch {
-    // storage blocked; ask every time
-  }
-  while (!name) name = (prompt('Your name, as others in the file will see it') ?? '').trim().slice(0, 60);
-  try {
-    localStorage.setItem('ohagi-name', name);
-  } catch {
-    // ignore
-  }
-  return name;
-}
-
 const STATUS_TEXT: Record<Status, string> = {
   connecting: 'Connecting',
   synced: 'Saved',
@@ -140,7 +126,8 @@ async function main() {
   const collection = root.dataset.collection!;
   const project = root.dataset.project!;
   const path = root.dataset.path!;
-  const name = myName();
+  const csrf = root.dataset.csrf!;
+  const writable = root.dataset.writable === '1';
   const statusEl = document.getElementById('status')!;
   const peersEl = document.getElementById('peers')!;
 
@@ -166,6 +153,7 @@ async function main() {
       doc,
       extensions: [
         collab({ startVersion: version, clientID }),
+        EditorState.readOnly.of(!writable),
         peersField,
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -211,7 +199,8 @@ async function main() {
       },
       status: (s) => {
         statusEl.textContent = STATUS_TEXT[s];
-        statusEl.className = `status-${s}`;
+        statusEl.className = `editor-status status-${s}`;
+        statusEl.dataset.state = s;
       },
       peer: (p: Peer) => {
         names.set(p.clientID, p.name);
@@ -224,14 +213,14 @@ async function main() {
         view.dispatch({ effects: removePeer.of(id) });
       },
     },
-    { base: '', collection, project, path, epoch: first.epoch, name },
+    { base: '', collection, project, path, epoch: first.epoch, csrf },
   );
   sync.start();
   const r = view.state.selection.main;
   sync.select(r.anchor, r.head);
   view.focus();
   window.addEventListener('beforeunload', (e) => {
-    if (statusEl.className === 'status-saving' || statusEl.className === 'status-offline') e.preventDefault();
+    if (statusEl.dataset.state === 'saving' || statusEl.dataset.state === 'offline') e.preventDefault();
   });
 }
 

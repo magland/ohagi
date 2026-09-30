@@ -3,39 +3,54 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { AddressInfo } from 'net';
 import { Server } from 'http';
 import { EditorState, Transaction } from '@codemirror/state';
 import { collab, getClientID, getSyncedVersion, sendableUpdates } from '@codemirror/collab';
-import { createApp, findStaticDir } from '../src/server';
-import { Shelf } from '../src/shelf';
+import { createApp } from '../src/server';
+import { Docs } from '../src/docs';
 import { LiveDoc } from '../src/livedoc';
+import { ProjectRef, findProject } from '../src/projects';
 import { Peer, Sync } from '../client/sync';
+import { EXAMPLE_TOKENS, createExample } from '../scripts/create-example';
 
 // Several pages, each running the same sync code the browser runs, typing
 // into one file at once, with random pauses; then checks that every page and
 // the file on disk hold the same text.
 
+type User = keyof typeof EXAMPLE_TOKENS;
+
 function makeShelf(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-test-'));
-  execFileSync('bash', [path.join(__dirname, '..', 'scripts', 'create-example.sh'), dir], { stdio: 'ignore' });
+  createExample(dir);
   return dir;
 }
 
-async function serve(root: string, port = 0): Promise<{ server: Server; shelf: Shelf; base: string; stop(): Promise<void> }> {
-  const shelf = new Shelf(root);
-  const app = createApp(shelf, findStaticDir());
+const PAPER = 'collections/alice/projects/paper';
+
+function paperRef(root: string): ProjectRef {
+  return findProject(root, 'alice', 'paper')!;
+}
+
+/** The server's live copy of alice/paper's main.tex. */
+function liveDoc(srv: { docs: Docs; root: string }): LiveDoc {
+  return srv.docs.get(paperRef(srv.root), 'main.tex');
+}
+
+async function serve(root: string, port = 0): Promise<{ server: Server; docs: Docs; root: string; base: string; stop(): Promise<void> }> {
+  const docs = new Docs();
+  const app = createApp(root, docs);
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(port, '127.0.0.1', () => resolve(s));
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     server,
-    shelf,
+    docs,
+    root,
     base,
     stop: async () => {
-      shelf.flushAll();
+      docs.flushAll();
       server.closeAllConnections();
       await new Promise((r) => server.close(r));
     },
@@ -48,7 +63,7 @@ class Page {
   resets = 0;
   peers = new Map<string, Peer>();
 
-  constructor(base: string, first: { epoch: string; version: number; doc: string }, readonly name: string) {
+  constructor(base: string, first: { epoch: string; version: number; doc: string }, readonly name: User) {
     this.state = EditorState.create({ doc: first.doc, extensions: [collab({ startVersion: first.version })] });
     const clientID = getClientID(this.state);
     this.sync = new Sync(
@@ -64,13 +79,20 @@ class Page {
         peer: (p) => this.peers.set(p.clientID, p),
         gone: (id) => this.peers.delete(id),
       },
-      { base, collection: 'alice', project: 'paper', path: 'main.tex', epoch: first.epoch, name },
+      {
+        base,
+        collection: 'alice',
+        project: 'paper',
+        path: 'main.tex',
+        epoch: first.epoch,
+        headers: { Authorization: `Bearer ${EXAMPLE_TOKENS[name]}` },
+      },
     );
     this.sync.start();
   }
 
-  static async open(base: string, name: string): Promise<Page> {
-    const first = await (await fetch(`${base}/api/projects/alice/paper/doc?path=main.tex`)).json();
+  static async open(base: string, name: User): Promise<Page> {
+    const first = await (await fetch(`${base}/api/projects/alice/paper/doc?path=main.tex`, { headers: auth(name) })).json();
     return new Page(base, first, name);
   }
 
@@ -97,6 +119,10 @@ class Page {
   }
 }
 
+function auth(user: User): Record<string, string> {
+  return { Authorization: `Bearer ${EXAMPLE_TOKENS[user]}` };
+}
+
 function seeded(seed: number): () => number {
   return () => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -106,8 +132,8 @@ function seeded(seed: number): () => number {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function settled(pages: Page[], shelf: Shelf, timeoutMs = 20000): Promise<void> {
-  const doc = shelf.doc('alice', 'paper', 'main.tex');
+async function settled(pages: Page[], srv: { docs: Docs; root: string }, timeoutMs = 20000): Promise<void> {
+  const doc = liveDoc(srv);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (pages.every((p) => sendableUpdates(p.state).length === 0 && getSyncedVersion(p.state) === doc.version)) return;
@@ -136,16 +162,16 @@ test('pages typing at once converge, and a restart continues the same history', 
   const root = makeShelf();
   let srv = await serve(root);
   const port = (srv.server.address() as AddressInfo).port;
-  const pages = await Promise.all(['alice', 'bob', 'carol', 'dan'].map((n) => Page.open(srv.base, n)));
+  const pages = await Promise.all((['alice', 'bob', 'dev'] as User[]).map((n) => Page.open(srv.base, n)));
   try {
     await typeConcurrently(pages, 200, 1);
-    await settled(pages, srv.shelf);
-    const text = srv.shelf.doc('alice', 'paper', 'main.tex').text.toString();
+    await settled(pages, srv);
+    const text = liveDoc(srv).text.toString();
     for (const p of pages) assert.equal(p.state.doc.toString(), text);
-    srv.shelf.flushAll();
-    assert.equal(fs.readFileSync(path.join(root, 'collections/alice/projects/paper/files/main.tex'), 'utf8'), text);
-    const versionBefore = srv.shelf.doc('alice', 'paper', 'main.tex').version;
-    assert.equal(versionBefore, 800);
+    srv.docs.flushAll();
+    assert.equal(fs.readFileSync(path.join(root, PAPER, 'files/main.tex'), 'utf8'), text);
+    const versionBefore = liveDoc(srv).version;
+    assert.equal(versionBefore, 600);
 
     // Restart on the same port while two pages keep typing through it.
     const typing = typeConcurrently(pages.slice(0, 2), 100, 7);
@@ -154,10 +180,10 @@ test('pages typing at once converge, and a restart continues the same history', 
     srv = await serve(root, port);
     await typing;
     await typeConcurrently(pages, 50, 11);
-    await settled(pages, srv.shelf);
-    const after = srv.shelf.doc('alice', 'paper', 'main.tex');
+    await settled(pages, srv);
+    const after = liveDoc(srv);
     for (const p of pages) assert.equal(p.state.doc.toString(), after.text.toString());
-    assert.equal(after.version, versionBefore + 400);
+    assert.equal(after.version, versionBefore + 350);
     for (const p of pages) assert.equal(p.resets, 0, `${p.name} was reset`);
   } finally {
     for (const p of pages) p.sync.close();
@@ -180,7 +206,7 @@ test('presence arrives at the other pages, mapped through later changes', async 
     // Bob types before alice's selection; the server moves it along.
     b.state = b.state.update({ changes: { from: 0, insert: 'xyz' } }).state;
     b.sync.changed();
-    await settled([a, b], srv.shelf);
+    await settled([a, b], srv);
     a.select(a.state.selection.main.anchor, a.state.selection.main.head);
     await sleep(200);
     const moved = b.peers.get(getClientID(a.state))!;
@@ -197,7 +223,7 @@ test('presence arrives at the other pages, mapped through later changes', async 
 
 test('changes logged but never written are replayed on load', () => {
   const root = makeShelf();
-  const dir = path.join(root, 'collections/alice/projects/paper');
+  const dir = path.join(root, PAPER);
   const file = path.join(dir, 'files/main.tex');
   const args = [file, path.join(dir, 'collab/main.tex.json'), path.join(dir, 'collab/main.tex.log')] as const;
   const doc = new LiveDoc(...args);
@@ -221,7 +247,7 @@ test('changes logged but never written are replayed on load', () => {
 
 test('a push against an old version is stale, so a resent push is taken once', () => {
   const root = makeShelf();
-  const dir = path.join(root, 'collections/alice/projects/paper');
+  const dir = path.join(root, PAPER);
   const doc = new LiveDoc(path.join(dir, 'files/main.tex'), path.join(dir, 'collab/main.tex.json'), path.join(dir, 'collab/main.tex.log'));
   const state = EditorState.create({ doc: doc.text });
   const u = { clientID: 'c1', changes: state.update({ changes: { from: 0, insert: 'hello ' } }).changes.toJSON() };
@@ -237,17 +263,17 @@ test('a file edited on disk starts a new history, and open pages are sent the te
   const page = await Page.open(srv.base, 'alice');
   try {
     page.randomEdit(seeded(3));
-    await settled([page], srv.shelf);
+    await settled([page], srv);
     await srv.stop();
-    fs.writeFileSync(path.join(root, 'collections/alice/projects/paper/files/main.tex'), 'edited elsewhere\n');
+    fs.writeFileSync(path.join(root, PAPER, 'files/main.tex'), 'edited elsewhere\n');
     srv = await serve(root, port);
     const deadline = Date.now() + 10000;
     while (page.resets === 0 && Date.now() < deadline) await sleep(20);
     assert.equal(page.resets, 1);
     assert.equal(page.state.doc.toString(), 'edited elsewhere\n');
     page.randomEdit(seeded(4));
-    await settled([page], srv.shelf);
-    assert.equal(srv.shelf.doc('alice', 'paper', 'main.tex').text.toString(), page.state.doc.toString());
+    await settled([page], srv);
+    assert.equal(liveDoc(srv).text.toString(), page.state.doc.toString());
   } finally {
     page.sync.close();
     await srv.stop();
@@ -258,12 +284,14 @@ test('paths outside the project are refused', async () => {
   const root = makeShelf();
   const srv = await serve(root);
   try {
-    for (const p of ['../../../etc/passwd', '/etc/passwd', '.git/config', 'a/../main.tex', 'figures/placeholder.png']) {
-      const res = await fetch(`${srv.base}/api/projects/alice/paper/doc?path=${encodeURIComponent(p)}`);
+    for (const p of ['../../../etc/passwd', '/etc/passwd', '.git/config', 'a/../main.tex', 'figures/placeholder.png', '../access.json']) {
+      const res = await fetch(`${srv.base}/api/projects/alice/paper/doc?path=${encodeURIComponent(p)}`, { headers: auth('alice') });
       assert.equal(res.status, 404, p);
     }
     for (const [c, p] of [['..', 'alice'], ['alice', '..'], ['lab', 'paper'], ['api', 'x'], ['.alice', 'paper']]) {
-      const res = await fetch(`${srv.base}/api/projects/${encodeURIComponent(c)}/${encodeURIComponent(p)}/doc?path=main.tex`);
+      const res = await fetch(`${srv.base}/api/projects/${encodeURIComponent(c)}/${encodeURIComponent(p)}/doc?path=main.tex`, {
+        headers: auth('dev'),
+      });
       assert.equal(res.status, 404, `${c}/${p}`);
     }
   } finally {
@@ -271,24 +299,127 @@ test('paths outside the project are refused', async () => {
   }
 });
 
-test('collections list their projects, and projects their files', async () => {
+/** Sign in through mochi's /login form, as a browser does; returns the session cookie. */
+async function signIn(base: string, user: User): Promise<string> {
+  const res = await fetch(`${base}/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ username: user, token: EXAMPLE_TOKENS[user], next: '/' }).toString(),
+  });
+  assert.equal(res.status, 302, `sign in as ${user}`);
+  const cookie = res.headers.get('set-cookie') ?? '';
+  assert.match(cookie, /^ohagi_session=/);
+  return cookie.split(';')[0];
+}
+
+async function getPage(base: string, url: string, cookie?: string): Promise<{ status: number; body: string; location: string | null }> {
+  const res = await fetch(`${base}${url}`, { redirect: 'manual', headers: cookie ? { Cookie: cookie } : {} });
+  return { status: res.status, body: await res.text(), location: res.headers.get('location') };
+}
+
+test('who sees what: members only, by mochi roles', async () => {
   const root = makeShelf();
   const srv = await serve(root);
   try {
-    const home = await (await fetch(`${srv.base}/`)).text();
-    assert.match(home, /href="\/alice"/);
-    assert.match(home, /href="\/lab"/);
-    const lab = await (await fetch(`${srv.base}/lab`)).text();
-    assert.match(lab, /href="\/lab\/proposal"/);
-    assert.doesNotMatch(lab, /paper/);
-    const paper = await (await fetch(`${srv.base}/alice/paper`)).text();
-    assert.match(paper, /href="\/alice\/paper\/f\/main.tex"/);
-    assert.match(paper, /href="\/alice\/paper\/f\/refs.bib"/);
-    assert.doesNotMatch(paper, /href="[^"]*placeholder.png"/);
-    assert.equal((await fetch(`${srv.base}/alice/paper/f/main.tex`)).status, 200);
-    assert.equal((await fetch(`${srv.base}/nobody`)).status, 404);
-    assert.equal((await fetch(`${srv.base}/lab/paper`)).status, 404);
-    assert.equal((await fetch(`${srv.base}/assets/editor.js`)).status, 200);
+    // Nobody signed in sees no project, and a project address sends them to sign in.
+    const anon = await getPage(srv.base, '/');
+    assert.match(anon.body, /Sign in<\/a> to see yours/);
+    assert.doesNotMatch(anon.body, /alice\/paper/);
+    const anonProject = await getPage(srv.base, '/alice/paper');
+    assert.equal(anonProject.status, 302);
+    assert.match(anonProject.location ?? '', /^\/login\?next=/);
+    assert.equal((await fetch(`${srv.base}/api/projects/alice/paper/doc?path=main.tex`)).status, 401);
+
+    // alice owns alice/paper and is not on lab/proposal.
+    const alice = await signIn(srv.base, 'alice');
+    const home = await getPage(srv.base, '/', alice);
+    assert.match(home.body, /href="\/alice\/paper"/);
+    assert.doesNotMatch(home.body, /href="\/lab\/proposal"/);
+    assert.equal((await getPage(srv.base, '/lab/proposal', alice)).status, 404);
+    const paper = await getPage(srv.base, '/alice/paper', alice);
+    assert.match(paper.body, /href="\/alice\/paper\/edit\/main.tex"/);
+    assert.match(paper.body, /href="\/alice\/paper\/edit\/refs.bib"/);
+    assert.doesNotMatch(paper.body, /href="[^"]*placeholder.png"/);
+    assert.match(paper.body, /Private/);
+    // The page is mochi's layout with ohagi's logo and stylesheet.
+    assert.match(paper.body, /class="topbar"/);
+    assert.match(paper.body, /aria-label="ohagi"/);
+    assert.match(paper.body, /\/assets\/ohagi\.css\?v=/);
+    assert.equal((await getPage(srv.base, '/alice/paper/edit/figures/placeholder.png', alice)).status, 404);
+
+    // bob writes alice/paper and administers lab/proposal, so he sees both.
+    const bob = await signIn(srv.base, 'bob');
+    const bobHome = await getPage(srv.base, '/', bob);
+    assert.match(bobHome.body, /href="\/alice\/paper"/);
+    assert.match(bobHome.body, /href="\/lab\/proposal"/);
+
+    // carol reads alice/paper: the editor opens read-only, and a push is refused.
+    const carol = await signIn(srv.base, 'carol');
+    const carolEditor = await getPage(srv.base, '/alice/paper/edit/main.tex', carol);
+    assert.equal(carolEditor.status, 200);
+    assert.match(carolEditor.body, /Read only/);
+    assert.match(carolEditor.body, /data-writable=""/);
+    const first = await (await fetch(`${srv.base}/api/projects/alice/paper/doc?path=main.tex`, { headers: auth('carol') })).json();
+    const change = EditorState.create({ doc: first.doc }).update({ changes: { from: 0, insert: 'x' } }).changes.toJSON();
+    const refused = await fetch(`${srv.base}/api/projects/alice/paper/push?path=main.tex`, {
+      method: 'POST',
+      headers: { ...auth('carol'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ epoch: first.epoch, version: first.version, updates: [{ clientID: 'c', changes: change }] }),
+    });
+    assert.equal(refused.status, 403);
+
+    // A signed-in browser's push needs the session's CSRF value, which the editor page carries.
+    const bobEditor = await getPage(srv.base, '/alice/paper/edit/main.tex', bob);
+    const csrf = /data-csrf="([^"]+)"/.exec(bobEditor.body)![1];
+    const push = (body: Record<string, unknown>) =>
+      fetch(`${srv.base}/api/projects/alice/paper/push?path=main.tex`, {
+        method: 'POST',
+        headers: { Cookie: bob, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ epoch: first.epoch, version: first.version, updates: [{ clientID: 'b', changes: change }], ...body }),
+      });
+    assert.equal((await push({})).status, 403, 'no CSRF value');
+    assert.equal((await push({ csrf: 'wrong' })).status, 403, 'wrong CSRF value');
+    const ok = await push({ csrf });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { accepted: true, version: first.version + 1 });
+
+    // The jump box lists what the viewer can open, and nothing else.
+    const jump = await (await fetch(`${srv.base}/assets/repos.json`, { headers: { Cookie: alice } })).json();
+    assert.deepEqual(jump, [{ name: 'alice/paper' }]);
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('creating a project and a collection follows mochi’s rules', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  try {
+    const carol = await signIn(srv.base, 'carol');
+    const form = await getPage(srv.base, '/new', carol);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(form.body)![1];
+    const create = (collection: string, name: string) =>
+      fetch(`${srv.base}/new`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { Cookie: carol, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf, collection, name, description: 'Notes' }).toString(),
+      });
+    // Her own collection is hers to create on the way.
+    const made = await create('carol', 'notes');
+    assert.equal(made.status, 303);
+    assert.equal(made.headers.get('location'), '/carol/notes');
+    assert.equal((await getPage(srv.base, '/carol/notes', carol)).status, 200);
+    assert.ok(fs.existsSync(path.join(root, 'collections/carol/projects/notes/files/main.tex')));
+    // Not someone else's, and not a new one under another name.
+    assert.equal((await create('alice', 'intrusion')).status, 403);
+    assert.equal((await create('elsewhere', 'x')).status, 403);
+    assert.equal((await create('carol', 'notes')).status, 409);
+    assert.equal((await create('carol', 'api')).status, 400);
+    // It is private: alice cannot see it.
+    const alice = await signIn(srv.base, 'alice');
+    assert.equal((await getPage(srv.base, '/carol/notes', alice)).status, 404);
   } finally {
     await srv.stop();
   }

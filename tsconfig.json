@@ -4,12 +4,14 @@
     "module": "CommonJS",
     "moduleResolution": "Node",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "..",
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": false
   },
-  "include": ["src"]
+  "include": ["src", "../mochiforge/src/md-plugins.d.ts"]
 }

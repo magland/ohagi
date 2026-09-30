@@ -1,182 +1,205 @@
+import './branding';
+import compression from 'compression';
+import { createHash } from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
-import { DocEvent, PushRefused } from './livedoc';
-import { NotFound, Shelf } from './shelf';
+import { registerAccountWeb } from '../../mochiforge/src/accountweb';
+import { registerAssets } from '../../mochiforge/src/assets';
+import { loadConfig } from '../../mochiforge/src/config';
+import { clientKey, createAuthLimiter, createLimiter } from '../../mochiforge/src/limit';
+import { getViewer, renewSession } from '../../mochiforge/src/session';
+import { setActiveTheme } from '../../mochiforge/src/themes';
+import { registerApi } from './api';
+import { Docs } from './docs';
+import { faviconSvg } from './logo';
+import { listCollectionNames, listProjectNames, projectDir, projectRole } from './projects';
+import { setNaming } from '../../mochiforge/src/naming';
+import { errorPage } from './views';
+import { registerWeb } from './web';
 
-// The prototype's server: collections at /<collection> and projects at
-// /<collection>/<project>, as mochi addresses repositories, and the editor, with the four API routes the editor syncs through. There is
-// no sign-in yet; that comes from mochiforge's modules, as it does in dango,
-// and until then the server should only listen on localhost.
+// One Express app, the shape of mochiforge's server and dango's: compression,
+// per-address rate limits, a strict CSP with no inline script, immutable
+// hashed assets, sliding sessions, and every route reading the shelf
+// directory on demand. What is mochi's is registered from mochi: the page
+// assets and the sign-in and account pages. What is ohagi's is the shelf's
+// pages, the editor, and the sync API the editor talks through.
 
-/** A stream whose reader has stopped reading is closed rather than buffered. */
-const MAX_STREAM_BUFFER = 8 * 1024 * 1024;
-const HEARTBEAT_MS = 25_000;
+/**
+ * What a shelf page may load, and from where; mochi's policy (see its
+ * src/server.ts for the reasoning), with connect-src 'self' carrying the
+ * editor's sync and event stream.
+ */
+const APP_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  'img-src * data:',
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self' https://github.com",
+  "frame-ancestors 'self'",
+].join('; ');
 
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+function isRateExempt(req: Request): boolean {
+  return req.path.startsWith('/assets/') || req.path === '/favicon.svg' || req.path === '/favicon.ico';
 }
 
-function page(title: string, body: string, head = ''): string {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title>
-<link rel="stylesheet" href="/assets/ohagi.css">${head}
-</head><body>${body}</body></html>`;
+// An editor's event stream must reach the page as it is written; compression
+// would buffer it. The sync pushes are small and gain nothing either.
+const UNCOMPRESSED = /^\/api\/projects\/[^/]+\/[^/]+\/(events|push|presence)$/;
+
+function isCompressible(req: Request, res: Response): boolean {
+  if (UNCOMPRESSED.test(req.path)) return false;
+  return compression.filter(req, res);
 }
 
-function fmtSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+/** A built file of ohagi's own, with a tag naming its bytes. */
+interface Built {
+  body: Buffer;
+  tag: string;
 }
 
-export function createApp(shelf: Shelf, staticDir: string): express.Express {
+/**
+ * Where the editor bundle and ohagi's stylesheet were built to: dist/static,
+ * reached from src/ under tsx or from dist/ohagi/src/ when compiled.
+ */
+export function findStaticDir(): string {
+  const candidates = [path.join(__dirname, '..', 'dist', 'static'), path.join(__dirname, '..', '..', 'static')];
+  for (const c of candidates) if (fs.existsSync(path.join(c, 'editor.js'))) return c;
+  throw new Error('The editor bundle is not built; run npm run build:client.');
+}
+
+function loadBuilt(file: string): Built {
+  const body = fs.readFileSync(file);
+  return { body, tag: createHash('sha256').update(body).digest('hex').slice(0, 12) };
+}
+
+export function createApp(root: string, docs: Docs, staticDir = findStaticDir()) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('query parser', 'simple');
+  const config = loadConfig(root);
+  // One hop, not `true`, for mochi's reason: req.ip must be the address the
+  // proxy saw, or every per-address limit is the client's to choose.
+  app.set('trust proxy', config.network.trustProxy ? 1 : false);
 
-  // Page assets sit under a name collections may not take, as in mochi.
-  app.use('/assets', express.static(staticDir, { maxAge: 0 }));
+  app.use(compression({ filter: isCompressible }));
 
-  const enc = encodeURIComponent;
-  const crumbs = (collection: string, project?: string) =>
-    `<a href="/${enc(collection)}">${esc(collection)}</a>` + (project ? ` / <a href="/${enc(collection)}/${enc(project)}">${esc(project)}</a>` : '');
-
-  app.get('/', (_req, res) => {
-    const items = shelf.collections().map((c) => {
-      const n = shelf.projects(c).length;
-      return `<li><a href="/${enc(c)}">${esc(c)}</a> <span class="size">${n} project${n === 1 ? '' : 's'}</span></li>`;
-    });
-    res.send(page('ohagi', `<main class="list"><h1>Collections</h1><ul>${items.join('') || '<li>None yet.</li>'}</ul></main>`));
+  const authLimiter = createAuthLimiter(config.limits.authFailures);
+  const requestLimiter = createLimiter({
+    limit: config.limits.requestsPerMinute,
+    windowMs: 60000,
+    maxKeys: 20000,
   });
 
-  app.get('/:collection', (req, res) => {
-    const { collection } = req.params;
-    const items = shelf.projects(collection).map((p) => `<li><a href="/${enc(collection)}/${enc(p)}">${esc(p)}</a></li>`);
-    res.send(page(collection, `<main class="list"><p><a href="/">Collections</a></p><h1>${esc(collection)}</h1><ul>${items.join('') || '<li>No projects yet.</li>'}</ul></main>`));
+  // The theme is shelf state, re-read (stat-cached) per request so a
+  // hand-edited config.json takes effect without a restart.
+  app.use((_req, _res, next) => {
+    setActiveTheme(loadConfig(root).theme);
+    next();
   });
 
-  app.get('/:collection/:project', (req, res) => {
-    const { collection, project } = req.params;
-    const files = shelf.files(collection, project);
-    const rows = files.map((f) => {
-      const name = esc(f.path);
-      const link = f.text ? `<a href="/${enc(collection)}/${enc(project)}/f/${f.path.split('/').map(enc).join('/')}">${name}</a>` : name;
-      return `<li>${link} <span class="size">${fmtSize(f.size)}</span></li>`;
-    });
-    res.send(page(`${collection}/${project}`, `<main class="list"><p>${crumbs(collection)}</p><h1>${esc(project)}</h1><ul>${rows.join('')}</ul></main>`));
+  app.use((req, res, next) => {
+    if (isRateExempt(req)) return next();
+    const decision = requestLimiter.hit(clientKey(req));
+    if (decision.ok) return next();
+    res.status(429).setHeader('Retry-After', String(decision.retryAfter));
+    res.type('html').send(errorPage(429, 'Too many requests from this address. Try again in a moment.', { viewer: null }));
   });
 
-  app.get('/:collection/:project/f/*', (req, res) => {
-    const { collection, project } = req.params;
-    const rel = Shelf.cleanPath((req.params as unknown as Record<string, string>)[0]);
-    shelf.doc(collection, project, rel); // 404 now rather than in the page
-    const body = `<header class="bar">
-  ${crumbs(collection, project)} / <b>${esc(rel)}</b>
-  <span id="peers"></span><span id="status">Connecting</span>
-</header>
-<div id="editor" data-collection="${esc(collection)}" data-project="${esc(project)}" data-path="${esc(rel)}"></div>
-<script src="/assets/editor.js"></script>`;
-    res.send(page(`${rel} · ${collection}/${project}`, body));
+  app.use((_req, res, next) => {
+    res.setHeader('Content-Security-Policy', APP_CSP);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
   });
 
-  // ---- API ----
+  // ---- assets: mochi's, then ohagi's own ----
 
-  const api = express.Router();
-  api.use(express.json({ limit: '16mb' }));
+  registerAssets(app, { favicon: () => faviconSvg() });
 
-  const docFor = (req: Request) => shelf.doc(req.params.collection, req.params.project, String(req.query.path ?? ''));
+  const editorJs = loadBuilt(path.join(staticDir, 'editor.js'));
+  const ohagiCss = loadBuilt(path.join(staticDir, 'ohagi.css'));
+  // Every page the shared layout draws, mochi's sign-in and account pages
+  // among them, links ohagi's stylesheet after mochi's.
+  setNaming({ pageHead: `\n<link rel="stylesheet" href="/assets/ohagi.css?v=${ohagiCss.tag}">` });
+  const serveBuilt = (built: Built, type: string) => (req: Request, res: Response) => {
+    const fresh = String(req.query.v ?? '') === built.tag;
+    res
+      .type(type)
+      .set('Cache-Control', fresh ? 'public, max-age=31536000, immutable' : 'no-cache')
+      .send(built.body);
+  };
+  app.get('/assets/editor.js', serveBuilt(editorJs, 'text/javascript'));
+  app.get('/assets/ohagi.css', serveBuilt(ohagiCss, 'text/css'));
 
-  api.get('/projects/:collection/:project/doc', (req, res) => {
-    const doc = docFor(req);
-    res.json({ epoch: doc.epoch, version: doc.version, doc: doc.text.toString() });
-  });
-
-  api.post('/projects/:collection/:project/push', (req, res) => {
-    const doc = docFor(req);
-    const { epoch, version, updates } = req.body ?? {};
-    if (typeof epoch !== 'string' || !Number.isInteger(version) || !Array.isArray(updates)) {
-      res.status(400).json({ error: 'epoch, version, and updates required' });
-      return;
+  // The jump box's list: every project this viewer can open, as
+  // collection/name, which is the shape mochi's page script searches.
+  app.get('/assets/repos.json', (req, res) => {
+    const viewer = getViewer(req, root);
+    const out: { name: string }[] = [];
+    for (const c of listCollectionNames(root)) {
+      for (const p of listProjectNames(root, c)) {
+        if (projectRole(root, viewer?.auth ?? null, { collection: c, name: p, dir: projectDir(root, c, p) }) !== null) {
+          out.push({ name: `${c}/${p}` });
+        }
+      }
     }
-    try {
-      res.json(doc.push(epoch, version, updates));
-    } catch (e) {
-      if (e instanceof PushRefused) res.status(409).json({ error: 'history moved on; reconnect' });
-      else res.status(400).json({ error: (e as Error).message });
-    }
+    res.set('Cache-Control', 'private, no-cache').json(out);
   });
 
-  api.post('/projects/:collection/:project/presence', (req, res) => {
-    const doc = docFor(req);
-    const { epoch, version, clientID, name, anchor, head } = req.body ?? {};
-    if (
-      typeof epoch !== 'string' ||
-      !Number.isInteger(version) ||
-      typeof clientID !== 'string' ||
-      typeof name !== 'string' ||
-      !Number.isInteger(anchor) ||
-      !Number.isInteger(head)
-    ) {
-      res.status(400).json({ error: 'bad presence' });
-      return;
-    }
-    doc.presence(epoch, version, { clientID: clientID.slice(0, 40), name: name.slice(0, 60), anchor, head });
-    res.json({});
+  // Sliding sessions, after the cacheable assets for mochi's reason: a
+  // Set-Cookie must never ride on a response a shared cache stores.
+  app.use((req, res, next) => {
+    renewSession(req, res, root);
+    next();
   });
 
-  api.get('/projects/:collection/:project/events', (req, res) => {
-    const doc = docFor(req);
-    const clientID = String(req.query.client ?? '');
-    const epoch = String(req.query.epoch ?? '');
-    const version = Number(req.query.version);
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      'X-Accel-Buffering': 'no',
-      Connection: 'keep-alive',
-    });
-    res.write(': open\n\n');
-    let closed = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      clearInterval(beat);
-      unsubscribe();
+  registerApi(app, root, authLimiter, docs);
+  // Signing in and out, the account page, passkeys, and the profile: mochi's
+  // own routes, the same ones a vault serves.
+  registerAccountWeb(app, root, authLimiter);
+  registerWeb(app, root, docs, editorJs.tag);
+
+  app.use((req, res) => {
+    res.status(404).type('html').send(errorPage(404, 'Page not found', { viewer: getViewer(req, root) }));
+  });
+
+  app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) {
+      console.error(err);
       res.end();
-    };
-    const send = (event: DocEvent) => {
-      if (closed) return;
-      if (res.writableLength > MAX_STREAM_BUFFER) {
-        close();
+      return;
+    }
+    let viewer = null;
+    try {
+      viewer = getViewer(req, root);
+    } catch {
+      viewer = null;
+    }
+    const status = (err as Error & { statusCode?: unknown }).statusCode ?? (err as Error & { status?: unknown }).status;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      const message =
+        (err as Error & { type?: unknown }).type === 'entity.too.large'
+          ? 'What you submitted is larger than this form accepts.'
+          : 'The request could not be read; go back and try again.';
+      if (req.path.startsWith('/api/')) {
+        res.status(status).json({ error: message });
         return;
       }
-      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
-    };
-    const unsubscribe = doc.subscribe({ clientID, send }, epoch, Number.isInteger(version) ? version : -1);
-    const beat = setInterval(() => res.write(': beat\n\n'), HEARTBEAT_MS);
-    req.on('close', close);
-  });
-
-  app.use('/api', api);
-
-  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
-    if (res.headersSent) return next(err);
-    if (err instanceof NotFound) {
-      res.status(404).send(page('Not found', `<main class="list"><h1>Not found</h1><p>${esc(err.message)}</p></main>`));
+      res.status(status).type('html').send(errorPage(status, message, { viewer }));
       return;
     }
     console.error(err);
-    res.status(500).send('Internal error');
+    if (req.path.startsWith('/api/')) {
+      res.status(500).json({ error: 'internal server error' });
+      return;
+    }
+    res.status(500).type('html').send(errorPage(500, 'Internal server error', { viewer }));
   });
 
   return app;
-}
-
-/** Where the built page assets are: dist/static beside the compiled server, or the checkout's when run from source. */
-export function findStaticDir(): string {
-  const candidates = [path.join(__dirname, '..', 'static'), path.join(__dirname, '..', 'dist', 'static')];
-  for (const c of candidates) if (fs.existsSync(path.join(c, 'editor.js'))) return c;
-  throw new Error('editor bundle not built; run npm run build:client');
 }

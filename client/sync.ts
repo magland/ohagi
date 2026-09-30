@@ -46,7 +46,10 @@ export interface SyncOptions {
   project: string;
   path: string;
   epoch: string;
-  name: string;
+  /** The session's CSRF value, sent with every write; the browser's cookie is the credential. */
+  csrf?: string;
+  /** Extra request headers: a bearer token, for a caller that is not a signed-in browser. */
+  headers?: Record<string, string>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -119,7 +122,7 @@ export class Sync {
         const st = this.host.state();
         const res = await fetch(
           this.url('events', { epoch: this.epoch, version: getSyncedVersion(st), client: getClientID(st) }),
-          { signal: abort.signal, headers: { Accept: 'text/event-stream' } },
+          { signal: abort.signal, headers: { ...this.opts.headers, Accept: 'text/event-stream' } },
         );
         if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
         this.connected = true;
@@ -216,8 +219,9 @@ export class Sync {
       const version = getSyncedVersion(st);
       const res = await fetch(this.url('push'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...this.opts.headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          csrf: this.opts.csrf,
           epoch: this.epoch,
           version,
           updates: updates.map((u) => ({ clientID: u.clientID, changes: u.changes.toJSON() })),
@@ -257,12 +261,12 @@ export class Sync {
     try {
       await fetch(this.url('presence'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...this.opts.headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          csrf: this.opts.csrf,
           epoch: this.epoch,
           version: getSyncedVersion(st),
           clientID: getClientID(st),
-          name: this.opts.name,
           anchor: sel.anchor,
           head: sel.head,
         }),
