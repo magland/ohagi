@@ -137,6 +137,7 @@ const STATUS_TEXT: Record<Status, string> = {
 
 async function main() {
   const root = document.getElementById('editor')!;
+  const collection = root.dataset.collection!;
   const project = root.dataset.project!;
   const path = root.dataset.path!;
   const name = myName();
@@ -144,7 +145,7 @@ async function main() {
   const peersEl = document.getElementById('peers')!;
 
   const q = new URLSearchParams({ path });
-  const first = await (await fetch(`/api/p/${encodeURIComponent(project)}/doc?${q}`)).json();
+  const first = await (await fetch(`/api/projects/${encodeURIComponent(collection)}/${encodeURIComponent(project)}/doc?${q}`)).json();
 
   const names = new Map<string, string>();
   const showPeers = () => {
@@ -223,7 +224,7 @@ async function main() {
         view.dispatch({ effects: removePeer.of(id) });
       },
     },
-    { base: '', project, path, epoch: first.epoch, name },
+    { base: '', collection, project, path, epoch: first.epoch, name },
   );
   sync.start();
   const r = view.state.selection.main;

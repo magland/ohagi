@@ -2,18 +2,35 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { LiveDoc } from './livedoc';
 
-// A shelf is one directory holding projects:
+// A shelf is one directory holding collections of projects, laid out the way
+// a mochi vault holds collections of repositories:
 //
 //   <shelf>/
-//     projects/
-//       thesis/
-//         files/            the project's files, as they would be cloned
-//         collab/           per text file: <file>.json and <file>.log
+//     collections/
+//       alice/
+//         projects/
+//           thesis/
+//             files/        the project's files, as they would be cloned
+//             collab/       per text file: <file>.json and <file>.log
 //
-// files/ holds nothing but the project, so it can become a git working tree
-// without the editing state showing up in it.
+// As in mochi, the two levels that hold only names somebody chose
+// (collections/ and projects/) hold nothing else, so a file the shelf or a
+// collection later gains takes no name away. files/ holds nothing but the
+// project, so it can become a git working tree without the editing state
+// showing up in it.
 
-const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+// Names the interface owns as top-level path segments, since a collection is
+// reached at /<collection> and a project at /<collection>/<project>. The same
+// list and rule as mochi's (src/scan.ts there), copied until ohagi imports
+// mochiforge's modules; the leading dot mochi allows for a repository alone
+// is not allowed here.
+const RESERVED_NAMES = new Set(['about', 'api', 'assets', 'favicon.ico', 'favicon.svg', 'login', 'logout', 'new', 'import', 'admin', 'settings', 'topics']);
+
+export function isValidName(name: string): boolean {
+  if (RESERVED_NAMES.has(name)) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && !name.includes('..') && name.length <= 100;
+}
+
 /** Files larger than this are not opened for editing. */
 const MAX_EDIT_BYTES = 4 * 1024 * 1024;
 
@@ -23,20 +40,40 @@ export class Shelf {
   private readonly docs = new Map<string, LiveDoc>();
 
   constructor(readonly root: string) {
-    fs.mkdirSync(path.join(root, 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'collections'), { recursive: true });
   }
 
-  projects(): string[] {
-    return fs
-      .readdirSync(path.join(this.root, 'projects'), { withFileTypes: true })
-      .filter((d) => d.isDirectory() && PROJECT_NAME.test(d.name))
-      .map((d) => d.name)
-      .sort();
+  private static subdirs(dir: string): string[] {
+    try {
+      return fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && isValidName(d.name))
+        .map((d) => d.name)
+        .sort();
+    } catch {
+      return [];
+    }
   }
 
-  projectDir(project: string): string {
-    if (!PROJECT_NAME.test(project)) throw new NotFound('no such project');
-    const dir = path.join(this.root, 'projects', project);
+  collections(): string[] {
+    return Shelf.subdirs(path.join(this.root, 'collections'));
+  }
+
+  collectionDir(collection: string): string {
+    const dir = path.join(this.root, 'collections', collection);
+    if (!isValidName(collection) || !fs.existsSync(dir)) throw new NotFound('no such collection');
+    return dir;
+  }
+
+  projects(collection: string): string[] {
+    return Shelf.subdirs(path.join(this.collectionDir(collection), 'projects')).filter((p) =>
+      fs.existsSync(path.join(this.root, 'collections', collection, 'projects', p, 'files')),
+    );
+  }
+
+  projectDir(collection: string, project: string): string {
+    if (!isValidName(project)) throw new NotFound('no such project');
+    const dir = path.join(this.collectionDir(collection), 'projects', project);
     if (!fs.existsSync(path.join(dir, 'files'))) throw new NotFound('no such project');
     return dir;
   }
@@ -54,8 +91,8 @@ export class Shelf {
   }
 
   /** The project's files, relative, sorted, with whether each can be edited as text. */
-  files(project: string): { path: string; text: boolean; size: number }[] {
-    const root = path.join(this.projectDir(project), 'files');
+  files(collection: string, project: string): { path: string; text: boolean; size: number }[] {
+    const root = path.join(this.projectDir(collection, project), 'files');
     const out: { path: string; text: boolean; size: number }[] = [];
     const walk = (dir: string, prefix: string) => {
       for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -73,10 +110,10 @@ export class Shelf {
   }
 
   /** The open document for a text file, loading it on first use. */
-  doc(project: string, rel: string): LiveDoc {
+  doc(collection: string, project: string, rel: string): LiveDoc {
     const clean = Shelf.cleanPath(rel);
-    const dir = this.projectDir(project);
-    const key = `${project}/${clean}`;
+    const dir = this.projectDir(collection, project);
+    const key = `${collection}/${project}/${clean}`;
     const open = this.docs.get(key);
     if (open) return open;
     const file = path.join(dir, 'files', clean);

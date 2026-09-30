@@ -8,11 +8,11 @@ This is a prototype. What exists is the part most likely to go wrong, collaborat
 
 ```bash
 npm install
-npm run example   # creates example-root/, a shelf with one small paper
+npm run example   # creates example-root/, a shelf with two collections
 npm run dev       # serves it at http://127.0.0.1:3000
 ```
 
-Open a `.tex` file in two browser windows and type in both. There is no sign-in yet (each page asks for a name, as the others will see it), so the server listens on localhost only.
+Open http://127.0.0.1:3000/alice/paper/f/main.tex in two browser windows and type in both. There is no sign-in yet (each page asks for a name, as the others will see it), so the server listens on localhost only.
 
 ## How editing works
 
@@ -24,18 +24,22 @@ Remote cursors travel separately and are held in memory only. A page sends its s
 
 ## The shelf
 
-A shelf is one directory:
+A shelf is one directory. Projects are grouped into *collections*, as repositories are in a mochi vault, and are addressed the same way: a collection at `/<collection>` and a project at `/<collection>/<project>`. Collection and project names follow mochi's rule, including its list of names the interface keeps for itself (`api`, `assets`, `login`, and so on).
 
 ```
 <shelf>/
-  projects/
-    paper/
-      files/            the project's files, and nothing else
-        main.tex
-      collab/
-        main.tex.json   epoch, version, and hash of the text as last written
-        main.tex.log    one line per accepted change
+  collections/
+    alice/
+      projects/
+        paper/
+          files/            the project's files, and nothing else
+            main.tex
+          collab/
+            main.tex.json   epoch, version, and hash of the text as last written
+            main.tex.log    one line per accepted change
 ```
+
+As in mochi, `collections/` and `projects/` hold only names somebody chose, so anything the shelf or a collection gains later sits beside them and takes no name away. Collections have no owners yet; that arrives with users.
 
 A file stays a plain file, written a moment after typing stops. Each accepted change is appended to the log before it is acknowledged, so after a crash loading replays whatever the file missed. The log also keeps recent history, so a page left open across a restart catches up from its own version rather than starting over. If the file on disk is not the text its metadata describes (it was edited with another tool while the server was stopped), a new *epoch* starts and open pages are sent the whole text.
 

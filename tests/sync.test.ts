@@ -64,13 +64,13 @@ class Page {
         peer: (p) => this.peers.set(p.clientID, p),
         gone: (id) => this.peers.delete(id),
       },
-      { base, project: 'paper', path: 'main.tex', epoch: first.epoch, name },
+      { base, collection: 'alice', project: 'paper', path: 'main.tex', epoch: first.epoch, name },
     );
     this.sync.start();
   }
 
   static async open(base: string, name: string): Promise<Page> {
-    const first = await (await fetch(`${base}/api/p/paper/doc?path=main.tex`)).json();
+    const first = await (await fetch(`${base}/api/projects/alice/paper/doc?path=main.tex`)).json();
     return new Page(base, first, name);
   }
 
@@ -107,7 +107,7 @@ function seeded(seed: number): () => number {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function settled(pages: Page[], shelf: Shelf, timeoutMs = 20000): Promise<void> {
-  const doc = shelf.doc('paper', 'main.tex');
+  const doc = shelf.doc('alice', 'paper', 'main.tex');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (pages.every((p) => sendableUpdates(p.state).length === 0 && getSyncedVersion(p.state) === doc.version)) return;
@@ -140,11 +140,11 @@ test('pages typing at once converge, and a restart continues the same history', 
   try {
     await typeConcurrently(pages, 200, 1);
     await settled(pages, srv.shelf);
-    const text = srv.shelf.doc('paper', 'main.tex').text.toString();
+    const text = srv.shelf.doc('alice', 'paper', 'main.tex').text.toString();
     for (const p of pages) assert.equal(p.state.doc.toString(), text);
     srv.shelf.flushAll();
-    assert.equal(fs.readFileSync(path.join(root, 'projects/paper/files/main.tex'), 'utf8'), text);
-    const versionBefore = srv.shelf.doc('paper', 'main.tex').version;
+    assert.equal(fs.readFileSync(path.join(root, 'collections/alice/projects/paper/files/main.tex'), 'utf8'), text);
+    const versionBefore = srv.shelf.doc('alice', 'paper', 'main.tex').version;
     assert.equal(versionBefore, 800);
 
     // Restart on the same port while two pages keep typing through it.
@@ -155,7 +155,7 @@ test('pages typing at once converge, and a restart continues the same history', 
     await typing;
     await typeConcurrently(pages, 50, 11);
     await settled(pages, srv.shelf);
-    const after = srv.shelf.doc('paper', 'main.tex');
+    const after = srv.shelf.doc('alice', 'paper', 'main.tex');
     for (const p of pages) assert.equal(p.state.doc.toString(), after.text.toString());
     assert.equal(after.version, versionBefore + 400);
     for (const p of pages) assert.equal(p.resets, 0, `${p.name} was reset`);
@@ -197,7 +197,7 @@ test('presence arrives at the other pages, mapped through later changes', async 
 
 test('changes logged but never written are replayed on load', () => {
   const root = makeShelf();
-  const dir = path.join(root, 'projects/paper');
+  const dir = path.join(root, 'collections/alice/projects/paper');
   const file = path.join(dir, 'files/main.tex');
   const args = [file, path.join(dir, 'collab/main.tex.json'), path.join(dir, 'collab/main.tex.log')] as const;
   const doc = new LiveDoc(...args);
@@ -221,7 +221,7 @@ test('changes logged but never written are replayed on load', () => {
 
 test('a push against an old version is stale, so a resent push is taken once', () => {
   const root = makeShelf();
-  const dir = path.join(root, 'projects/paper');
+  const dir = path.join(root, 'collections/alice/projects/paper');
   const doc = new LiveDoc(path.join(dir, 'files/main.tex'), path.join(dir, 'collab/main.tex.json'), path.join(dir, 'collab/main.tex.log'));
   const state = EditorState.create({ doc: doc.text });
   const u = { clientID: 'c1', changes: state.update({ changes: { from: 0, insert: 'hello ' } }).changes.toJSON() };
@@ -239,7 +239,7 @@ test('a file edited on disk starts a new history, and open pages are sent the te
     page.randomEdit(seeded(3));
     await settled([page], srv.shelf);
     await srv.stop();
-    fs.writeFileSync(path.join(root, 'projects/paper/files/main.tex'), 'edited elsewhere\n');
+    fs.writeFileSync(path.join(root, 'collections/alice/projects/paper/files/main.tex'), 'edited elsewhere\n');
     srv = await serve(root, port);
     const deadline = Date.now() + 10000;
     while (page.resets === 0 && Date.now() < deadline) await sleep(20);
@@ -247,7 +247,7 @@ test('a file edited on disk starts a new history, and open pages are sent the te
     assert.equal(page.state.doc.toString(), 'edited elsewhere\n');
     page.randomEdit(seeded(4));
     await settled([page], srv.shelf);
-    assert.equal(srv.shelf.doc('paper', 'main.tex').text.toString(), page.state.doc.toString());
+    assert.equal(srv.shelf.doc('alice', 'paper', 'main.tex').text.toString(), page.state.doc.toString());
   } finally {
     page.sync.close();
     await srv.stop();
@@ -259,10 +259,36 @@ test('paths outside the project are refused', async () => {
   const srv = await serve(root);
   try {
     for (const p of ['../../../etc/passwd', '/etc/passwd', '.git/config', 'a/../main.tex', 'figures/placeholder.png']) {
-      const res = await fetch(`${srv.base}/api/p/paper/doc?path=${encodeURIComponent(p)}`);
+      const res = await fetch(`${srv.base}/api/projects/alice/paper/doc?path=${encodeURIComponent(p)}`);
       assert.equal(res.status, 404, p);
     }
-    assert.equal((await fetch(`${srv.base}/api/p/..%2F..%2Fetc/doc?path=passwd`)).status, 404);
+    for (const [c, p] of [['..', 'alice'], ['alice', '..'], ['lab', 'paper'], ['api', 'x'], ['.alice', 'paper']]) {
+      const res = await fetch(`${srv.base}/api/projects/${encodeURIComponent(c)}/${encodeURIComponent(p)}/doc?path=main.tex`);
+      assert.equal(res.status, 404, `${c}/${p}`);
+    }
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('collections list their projects, and projects their files', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  try {
+    const home = await (await fetch(`${srv.base}/`)).text();
+    assert.match(home, /href="\/alice"/);
+    assert.match(home, /href="\/lab"/);
+    const lab = await (await fetch(`${srv.base}/lab`)).text();
+    assert.match(lab, /href="\/lab\/proposal"/);
+    assert.doesNotMatch(lab, /paper/);
+    const paper = await (await fetch(`${srv.base}/alice/paper`)).text();
+    assert.match(paper, /href="\/alice\/paper\/f\/main.tex"/);
+    assert.match(paper, /href="\/alice\/paper\/f\/refs.bib"/);
+    assert.doesNotMatch(paper, /href="[^"]*placeholder.png"/);
+    assert.equal((await fetch(`${srv.base}/alice/paper/f/main.tex`)).status, 200);
+    assert.equal((await fetch(`${srv.base}/nobody`)).status, 404);
+    assert.equal((await fetch(`${srv.base}/lab/paper`)).status, 404);
+    assert.equal((await fetch(`${srv.base}/assets/editor.js`)).status, 200);
   } finally {
     await srv.stop();
   }

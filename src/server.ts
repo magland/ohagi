@@ -4,8 +4,8 @@ import * as path from 'path';
 import { DocEvent, PushRefused } from './livedoc';
 import { NotFound, Shelf } from './shelf';
 
-// The prototype's server: a list of projects, a list of a project's files,
-// and the editor, with the four API routes the editor syncs through. There is
+// The prototype's server: collections at /<collection> and projects at
+// /<collection>/<project>, as mochi addresses repositories, and the editor, with the four API routes the editor syncs through. There is
 // no sign-in yet; that comes from mochiforge's modules, as it does in dango,
 // and until then the server should only listen on localhost.
 
@@ -22,7 +22,7 @@ function page(title: string, body: string, head = ''): string {
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
-<link rel="stylesheet" href="/static/ohagi.css">${head}
+<link rel="stylesheet" href="/assets/ohagi.css">${head}
 </head><body>${body}</body></html>`;
 }
 
@@ -36,35 +36,49 @@ export function createApp(shelf: Shelf, staticDir: string): express.Express {
   const app = express();
   app.disable('x-powered-by');
 
-  app.use('/static', express.static(staticDir, { maxAge: 0 }));
+  // Page assets sit under a name collections may not take, as in mochi.
+  app.use('/assets', express.static(staticDir, { maxAge: 0 }));
+
+  const enc = encodeURIComponent;
+  const crumbs = (collection: string, project?: string) =>
+    `<a href="/${enc(collection)}">${esc(collection)}</a>` + (project ? ` / <a href="/${enc(collection)}/${enc(project)}">${esc(project)}</a>` : '');
 
   app.get('/', (_req, res) => {
-    const items = shelf.projects().map((p) => `<li><a href="/p/${encodeURIComponent(p)}">${esc(p)}</a></li>`);
-    res.send(page('ohagi', `<main class="list"><h1>Projects</h1><ul>${items.join('') || '<li>None yet.</li>'}</ul></main>`));
+    const items = shelf.collections().map((c) => {
+      const n = shelf.projects(c).length;
+      return `<li><a href="/${enc(c)}">${esc(c)}</a> <span class="size">${n} project${n === 1 ? '' : 's'}</span></li>`;
+    });
+    res.send(page('ohagi', `<main class="list"><h1>Collections</h1><ul>${items.join('') || '<li>None yet.</li>'}</ul></main>`));
   });
 
-  app.get('/p/:project', (req, res) => {
-    const project = req.params.project;
-    const files = shelf.files(project);
+  app.get('/:collection', (req, res) => {
+    const { collection } = req.params;
+    const items = shelf.projects(collection).map((p) => `<li><a href="/${enc(collection)}/${enc(p)}">${esc(p)}</a></li>`);
+    res.send(page(collection, `<main class="list"><p><a href="/">Collections</a></p><h1>${esc(collection)}</h1><ul>${items.join('') || '<li>No projects yet.</li>'}</ul></main>`));
+  });
+
+  app.get('/:collection/:project', (req, res) => {
+    const { collection, project } = req.params;
+    const files = shelf.files(collection, project);
     const rows = files.map((f) => {
       const name = esc(f.path);
-      const link = f.text ? `<a href="/p/${encodeURIComponent(project)}/f/${f.path.split('/').map(encodeURIComponent).join('/')}">${name}</a>` : name;
+      const link = f.text ? `<a href="/${enc(collection)}/${enc(project)}/f/${f.path.split('/').map(enc).join('/')}">${name}</a>` : name;
       return `<li>${link} <span class="size">${fmtSize(f.size)}</span></li>`;
     });
-    res.send(page(project, `<main class="list"><p><a href="/">Projects</a></p><h1>${esc(project)}</h1><ul>${rows.join('')}</ul></main>`));
+    res.send(page(`${collection}/${project}`, `<main class="list"><p>${crumbs(collection)}</p><h1>${esc(project)}</h1><ul>${rows.join('')}</ul></main>`));
   });
 
-  app.get('/p/:project/f/*', (req, res) => {
-    const project = req.params.project;
+  app.get('/:collection/:project/f/*', (req, res) => {
+    const { collection, project } = req.params;
     const rel = Shelf.cleanPath((req.params as unknown as Record<string, string>)[0]);
-    shelf.doc(project, rel); // 404 now rather than in the page
+    shelf.doc(collection, project, rel); // 404 now rather than in the page
     const body = `<header class="bar">
-  <a href="/p/${encodeURIComponent(project)}">${esc(project)}</a> / <b>${esc(rel)}</b>
+  ${crumbs(collection, project)} / <b>${esc(rel)}</b>
   <span id="peers"></span><span id="status">Connecting</span>
 </header>
-<div id="editor" data-project="${esc(project)}" data-path="${esc(rel)}"></div>
-<script src="/static/editor.js"></script>`;
-    res.send(page(`${rel} · ${project}`, body));
+<div id="editor" data-collection="${esc(collection)}" data-project="${esc(project)}" data-path="${esc(rel)}"></div>
+<script src="/assets/editor.js"></script>`;
+    res.send(page(`${rel} · ${collection}/${project}`, body));
   });
 
   // ---- API ----
@@ -72,14 +86,14 @@ export function createApp(shelf: Shelf, staticDir: string): express.Express {
   const api = express.Router();
   api.use(express.json({ limit: '16mb' }));
 
-  const docFor = (req: Request) => shelf.doc(req.params.project, String(req.query.path ?? ''));
+  const docFor = (req: Request) => shelf.doc(req.params.collection, req.params.project, String(req.query.path ?? ''));
 
-  api.get('/p/:project/doc', (req, res) => {
+  api.get('/projects/:collection/:project/doc', (req, res) => {
     const doc = docFor(req);
     res.json({ epoch: doc.epoch, version: doc.version, doc: doc.text.toString() });
   });
 
-  api.post('/p/:project/push', (req, res) => {
+  api.post('/projects/:collection/:project/push', (req, res) => {
     const doc = docFor(req);
     const { epoch, version, updates } = req.body ?? {};
     if (typeof epoch !== 'string' || !Number.isInteger(version) || !Array.isArray(updates)) {
@@ -94,7 +108,7 @@ export function createApp(shelf: Shelf, staticDir: string): express.Express {
     }
   });
 
-  api.post('/p/:project/presence', (req, res) => {
+  api.post('/projects/:collection/:project/presence', (req, res) => {
     const doc = docFor(req);
     const { epoch, version, clientID, name, anchor, head } = req.body ?? {};
     if (
@@ -112,7 +126,7 @@ export function createApp(shelf: Shelf, staticDir: string): express.Express {
     res.json({});
   });
 
-  api.get('/p/:project/events', (req, res) => {
+  api.get('/projects/:collection/:project/events', (req, res) => {
     const doc = docFor(req);
     const clientID = String(req.query.client ?? '');
     const epoch = String(req.query.epoch ?? '');

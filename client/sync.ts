@@ -42,6 +42,7 @@ export interface SyncHost {
 export interface SyncOptions {
   /** The origin, '' in a browser. */
   base: string;
+  collection: string;
   project: string;
   path: string;
   epoch: string;
@@ -93,7 +94,7 @@ export class Sync {
   private url(route: string, extra: Record<string, string | number> = {}): string {
     const q = new URLSearchParams({ path: this.opts.path });
     for (const [k, v] of Object.entries(extra)) q.set(k, String(v));
-    return `${this.opts.base}/api/p/${encodeURIComponent(this.opts.project)}/${route}?${q}`;
+    return `${this.opts.base}/api/projects/${encodeURIComponent(this.opts.collection)}/${encodeURIComponent(this.opts.project)}/${route}?${q}`;
   }
 
   private report(): void {

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# An example shelf with one small paper, for trying the editor.
+# An example shelf, for trying the editor: collection alice with a small
+# paper, and collection lab with a proposal.
 set -euo pipefail
 root="${1:?usage: create-example.sh <dir>}"
-files="$root/projects/paper/files"
+files="$root/collections/alice/projects/paper/files"
 mkdir -p "$files/figures"
 cat > "$files/main.tex" <<'TEX'
 \documentclass{article}
@@ -45,4 +46,13 @@ cat > "$files/refs.bib" <<'BIB'
 }
 BIB
 printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$files/figures/placeholder.png"
+files="$root/collections/lab/projects/proposal/files"
+mkdir -p "$files"
+cat > "$files/proposal.tex" <<'TEX'
+\documentclass{article}
+\begin{document}
+\section*{Specific Aims}
+Aim 1 goes here.
+\end{document}
+TEX
 echo "Created $root"
