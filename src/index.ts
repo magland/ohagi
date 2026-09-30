@@ -293,8 +293,8 @@ once the shelf answers. Run it again to deploy a new version; settings not
 named by a flag keep whatever the live app has. A shelf is a directory on one
 volume, so the app runs as exactly one machine.
 
-Compiling wants memory: --vm-memory 2gb is a sensible start for a shelf used
-by a few people, and lualatex documents want more.
+A new app gets 2gb of memory, which holds a couple of compiles at once;
+--vm-memory changes it, and lualatex documents may want more.
 
 --from-source builds the image from the checkouts you are running (ohagi and
 mochiforge side by side); --local-build uses this machine's Docker rather than

@@ -108,16 +108,17 @@ export const OHAGI_DEPLOY: DeployProfile = {
   imageRepo: IMAGE_REPO,
   version: ownVersion,
   buildContext: stageBuildContext,
-  volumeName: 'workspace',
-  mountPath: '/workspace',
+  volumeName: 'shelf',
+  mountPath: '/shelf',
   remoteCli: 'node /app/dist/ohagi/src/index.js',
   lfsBucket: false,
-  // Counted in connections rather than requests, and set well above a forge's:
-  // every open room holds one event stream for as long as it is open, so a
-  // request count would read a quiet workspace with a hundred people in it as
-  // a machine under load. Node holds idle streams cheaply.
+  // Counted in connections rather than requests, as dango's are: every open
+  // editor holds one event stream for as long as it is open. Node holds idle
+  // streams cheaply.
   concurrency: { type: 'connections', soft: 800, hard: 1000 },
-  contents: 'channels, messages, conversations, uploads, users',
+  contents: 'projects, their files and history, users',
+  // TeX wants more than a chat server: 2gb holds a couple of compiles at once.
+  defaultMemory: '2gb',
   firstSteps: (url, username) => [
     `To start using the shelf in a browser, open its sign-in page and paste that`,
     `token; it signs you in as '${username}':`,
