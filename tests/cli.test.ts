@@ -8,6 +8,7 @@ import { AddressInfo } from 'net';
 import { Server } from 'http';
 import { createApp } from '../src/server';
 import { Docs } from '../src/docs';
+import { Compiler } from '../src/compile';
 import { EXAMPLE_TOKENS, createExample } from '../scripts/create-example';
 
 // The command line against a running shelf, as a person or a script uses it,
@@ -20,7 +21,7 @@ async function serve(): Promise<{ root: string; base: string; stop(): Promise<vo
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-cli-'));
   createExample(root);
   const docs = new Docs();
-  const app = createApp(root, docs);
+  const app = createApp(root, docs, new Compiler());
   const server = await new Promise<Server>((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });
@@ -162,6 +163,28 @@ test('file get, put, mv, and rm from the command line', async () => {
     await json(srv.base, bob, ['file', 'rm', 'alice/paper', 'figures/renamed.png']);
     assert.notEqual((await cli(srv.base, EXAMPLE_TOKENS.carol, ['file', 'rm', 'alice/paper', 'main.tex'])).code, 0, 'carol only reads');
     assert.ok(fs.existsSync(path.join(srv.root, 'collections/alice/projects/paper/files/main.tex')));
+  } finally {
+    await srv.stop();
+  }
+});
+
+test('compile from the command line, by anyone who can read the project', async () => {
+  const srv = await serve();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-pdf-'));
+  try {
+    const out = path.join(tmp, 'paper.pdf');
+    // carol only reads alice/paper, and may still compile it.
+    const r = await cli(srv.base, EXAMPLE_TOKENS.carol, ['compile', 'alice/paper', '-o', out]);
+    assert.match(r.stdout, /Compiled: alice\/paper \(main\.tex\)/);
+    assert.equal(fs.readFileSync(out).subarray(0, 4).toString(), '%PDF');
+    // The example cites a .bib it never runs bibtex on to completion; any
+    // warnings are fine, errors are not.
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    // A broken document exits non-zero and says where.
+    fs.writeFileSync(path.join(srv.root, 'collections/alice/projects/paper/files/main.tex'), '\\documentclass{article}\\begin{document}\n\\oops\n\\end{document}\n');
+    const bad = await cli(srv.base, EXAMPLE_TOKENS.bob, ['compile', 'alice/paper']);
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.stdout, /main\.tex:2: Undefined control sequence/);
   } finally {
     await srv.stop();
   }

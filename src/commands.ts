@@ -351,4 +351,42 @@ replaced only with --overwrite.`,
       print(inv, data, () => console.log(`Renamed ${data.from} to ${data.to}`));
     },
   },
+
+  // ---- compiling ----
+  {
+    path: ['compile'],
+    summary: 'Compile a project to PDF, and optionally save it here',
+    description: `  ohagi compile alice/paper              says how it went, and lists errors
+  ohagi compile alice/paper -o paper.pdf  also writes the PDF
+
+Exits non-zero when the compile has errors or produces no PDF.`,
+    args: [{ name: 'project', required: true }],
+    options: [
+      { name: 'output', short: 'o', type: 'string', value: '<file>', summary: 'Write the PDF here' },
+      { name: 'log', type: 'boolean', summary: 'Print the end of the log too' },
+      JSON_OPTION,
+      ...TARGET_OPTIONS,
+    ],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const p = projectArg(inv, 0);
+      const r = await api(target, 'POST', `${p.path}/compile`, {});
+      const errors = (r.errors ?? []) as { file: string | null; line: number | null; message: string }[];
+      const json = jsonMode(inv);
+      if (json.enabled) printJson(pickObject(r, json.fields));
+      else {
+        console.log(`${r.status === 'success' ? 'Compiled' : `Compile ${r.status}`}: ${p.collection}/${p.project} (${r.main || 'no main file'}) in ${((r.durationMs as number) / 1000).toFixed(1)} s, ${r.warnings} warning${r.warnings === 1 ? '' : 's'}`);
+        for (const e of errors) console.log(`  ${e.file ? `${e.file}${e.line ? `:${e.line}` : ''}: ` : ''}${e.message}`);
+        if (inv.bool('log')) console.log(String(r.log ?? ''));
+      }
+      const out = inv.str('output');
+      if (out && r.pdf) {
+        const pdf = await requestBytes(target, 'GET', `${p.path}/output.pdf`);
+        if (!pdf.ok) throw new CliError('The PDF could not be fetched.', exitCodeForStatus(pdf.status));
+        fs.writeFileSync(out, pdf.body);
+        if (!json.enabled) console.log(`Wrote ${out}`);
+      }
+      if (r.status !== 'success' || !r.pdf) process.exitCode = 1;
+    },
+  },
 ];

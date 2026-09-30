@@ -27,6 +27,16 @@ export interface Peer {
   head: number;
 }
 
+export interface CompiledSummary {
+  status: 'success' | 'failure' | 'timeout' | 'error';
+  main: string;
+  errors: { file: string | null; line: number | null; message: string }[];
+  warnings: number;
+  pdf: boolean;
+  durationMs: number;
+  finished: string;
+}
+
 export type Status = 'connecting' | 'synced' | 'saving' | 'offline' | 'error' | 'deleted';
 
 export interface SyncHost {
@@ -37,6 +47,8 @@ export interface SyncHost {
   status?(s: Status): void;
   peer?(p: Peer): void;
   gone?(clientID: string): void;
+  /** The project was compiled, by this page or another. */
+  compiled?(result: CompiledSummary): void;
   /** The file went away: renamed, to the editor address given, or deleted. Syncing has stopped. */
   closed?(reason: 'moved' | 'deleted', to?: string): void;
 }
@@ -198,6 +210,8 @@ export class Sync {
       this.host.peer?.({ ...p, anchor, head });
     } else if (ev.type === 'gone') {
       this.host.gone?.(ev.clientID);
+    } else if (ev.type === 'compiled') {
+      this.host.compiled?.(ev.result);
     } else if (ev.type === 'closed') {
       this.closed = true;
       this.host.closed?.(ev.reason, ev.to);

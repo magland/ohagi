@@ -19,7 +19,7 @@ import { bracketMatching, defaultHighlightStyle, StreamLanguage, syntaxHighlight
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { collab, getClientID } from '@codemirror/collab';
-import { Peer, Status, Sync } from './sync';
+import { CompiledSummary, Peer, Status, Sync } from './sync';
 
 // The editor page: CodeMirror 6 with the collab extension, synced through
 // sync.ts, and the other people in the file drawn as coloured cursors. Who
@@ -187,6 +187,126 @@ async function main() {
 
   const view = new EditorView({ state: makeState(first.doc, first.version), parent: root });
 
+  // ---- the PDF pane ----
+
+  const api = `/api/projects/${encodeURIComponent(collection)}/${encodeURIComponent(project)}`;
+  const fileUrl = (rel: string) =>
+    `/${encodeURIComponent(collection)}/${encodeURIComponent(project)}/edit/${rel.split('/').map(encodeURIComponent).join('/')}`;
+  const $ = (id: string) => document.getElementById(id)!;
+  const recompileBtn = $('recompile') as HTMLButtonElement;
+  const compileStatus = $('compile-status');
+  const issuesBtn = $('show-issues') as HTMLButtonElement;
+  const issues = $('issues');
+  const frame = $('pdf-frame') as HTMLIFrameElement;
+  const empty = $('pdf-empty');
+  const download = $('pdf-download');
+  let shownPdf = '';
+
+  const goToLine = (line: number) => {
+    const doc = view.state.doc;
+    const at = doc.line(Math.max(1, Math.min(line, doc.lines))).from;
+    view.dispatch({ selection: { anchor: at }, scrollIntoView: true });
+    view.focus();
+  };
+
+  const showResult = (r: CompiledSummary, log?: string) => {
+    const secs = (r.durationMs / 1000).toFixed(1);
+    const said: Record<string, string> = {
+      success: `Compiled in ${secs} s`,
+      failure: `Compiled with errors in ${secs} s`,
+      timeout: 'The compile took too long and was stopped',
+      error: 'Could not compile',
+    };
+    compileStatus.textContent = said[r.status] ?? r.status;
+    compileStatus.className = `small status-${r.status}`;
+    const n = r.errors.length;
+    issuesBtn.hidden = n === 0 && r.warnings === 0;
+    issuesBtn.textContent = n ? `${n} error${n === 1 ? '' : 's'}` : `${r.warnings} warning${r.warnings === 1 ? '' : 's'}`;
+    const list = document.createElement('ul');
+    for (const e of r.errors) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = e.file && e.line ? `${fileUrl(e.file)}#L${e.line}` : '#';
+      const where = document.createElement('span');
+      where.className = 'where';
+      where.textContent = e.file ? `${e.file}${e.line ? `:${e.line}` : ''}` : '';
+      a.append(where, document.createTextNode(e.message));
+      a.addEventListener('click', (ev) => {
+        if (e.file === path && e.line) {
+          ev.preventDefault();
+          goToLine(e.line);
+        } else if (!e.file) ev.preventDefault();
+      });
+      li.append(a);
+      list.append(li);
+    }
+    issues.replaceChildren(list);
+    if (log !== undefined) {
+      const details = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'Log';
+      const pre = document.createElement('pre');
+      pre.textContent = log;
+      details.append(summary, pre);
+      issues.append(details);
+    }
+    if (n === 0) issues.hidden = true;
+    else if (r.status !== 'success') issues.hidden = false;
+    if (r.pdf && r.finished !== shownPdf) {
+      shownPdf = r.finished;
+      frame.src = `${api}/output.pdf?t=${encodeURIComponent(r.finished)}#view=FitH`;
+      frame.hidden = false;
+      empty.hidden = true;
+      download.hidden = false;
+    }
+  };
+  issuesBtn.addEventListener('click', () => {
+    issues.hidden = !issues.hidden;
+  });
+
+  let compiling = false;
+  const recompile = async () => {
+    if (compiling) return;
+    compiling = true;
+    recompileBtn.disabled = true;
+    compileStatus.textContent = 'Compiling…';
+    compileStatus.className = 'small muted';
+    try {
+      const res = await fetch(`${api}/compile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf }),
+      });
+      const r = await res.json();
+      if (!res.ok) throw new Error(r.error ?? `HTTP ${res.status}`);
+      showResult(r, r.log);
+    } catch (e) {
+      compileStatus.textContent = `Could not compile: ${e instanceof Error ? e.message : e}`;
+      compileStatus.className = 'small status-error';
+    } finally {
+      compiling = false;
+      recompileBtn.disabled = false;
+    }
+  };
+  recompileBtn.addEventListener('click', () => void recompile());
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'Enter')) {
+      e.preventDefault();
+      void recompile();
+    }
+  });
+  // The last compile, if there has been one, so the pane opens with the PDF.
+  void fetch(`${api}/compile`).then(async (res) => {
+    if (res.ok) {
+      const r = await res.json();
+      showResult(r, r.log);
+    }
+  });
+  // An address ending in #L<line> opens at that line, which is how an error
+  // in another file is followed.
+  const lineMatch = /^#L(\d+)$/.exec(location.hash);
+  if (lineMatch) goToLine(parseInt(lineMatch[1], 10));
+
   sync = new Sync(
     {
       state: () => view.state,
@@ -209,6 +329,7 @@ async function main() {
         showPeers();
         view.dispatch({ effects: setPeer.of({ id: p.clientID, cursor: { name: p.name, color: colorFor(p.name), anchor: p.anchor, head: p.head } }) });
       },
+      compiled: (r) => showResult(r),
       closed: (reason, to) => {
         if (reason === 'moved' && to) {
           location.replace(to);

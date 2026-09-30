@@ -1,4 +1,7 @@
 import express, { Express, Request, Response } from 'express';
+import { statSync } from 'fs';
+
+const fsStatFile = (f: string) => statSync(f).isFile();
 import { apiError, requireApiAuth } from '../../mochiforge/src/api/auth';
 import { AuthLimiter } from '../../mochiforge/src/limit';
 import {
@@ -18,6 +21,7 @@ import {
 import { userExists } from '../../mochiforge/src/vault';
 import { checkCsrf, getViewer } from '../../mochiforge/src/session';
 import { AuthResult } from '../../mochiforge/src/vault';
+import { Compiler, pdfPath } from './compile';
 import { DocNotFound, Docs } from './docs';
 import { DocEvent, LiveDoc, PushRefused } from './livedoc';
 import { fileUrl } from './views';
@@ -65,7 +69,7 @@ interface Access {
   doc: LiveDoc;
 }
 
-export function registerApi(app: Express, root: string, limiter: AuthLimiter, docs: Docs): void {
+export function registerApi(app: Express, root: string, limiter: AuthLimiter, docs: Docs, compiler: Compiler): void {
 
   /** The caller, by bearer token or by session; null having answered. */
   function caller(req: Request, res: Response, write: boolean): AuthResult | null {
@@ -446,4 +450,63 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       sendProjectError(res, e);
     }
   });
+
+  // ---- compiling ----
+  //
+  // Anyone who can read a project may compile it, as anyone who can see an
+  // Overleaf project may press Recompile: it changes nothing in the project,
+  // and the PDF is what a reader came for. Open files are written first, so
+  // the compile sees what the editors show.
+
+  app.post('/api/projects/:collection/:project/compile', async (req, res, next) => {
+    const p = projectFor(req, res, 'read', true);
+    if (!p) return;
+    try {
+      docs.flushProject(p.ref.dir);
+      const result = await compiler.compile(p.ref, projectMeta(p.ref).engine ?? 'pdflatex');
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  app.get('/api/projects/:collection/:project/compile', (req, res) => {
+    const p = projectFor(req, res, 'read', false);
+    if (!p) return;
+    const last = compiler.lastResult(p.ref);
+    if (!last) {
+      apiError(res, 404, 'this project has not been compiled yet');
+      return;
+    }
+    res.json(last);
+  });
+
+  app.get('/api/projects/:collection/:project/output.pdf', (req, res) => {
+    const p = projectFor(req, res, 'read', false);
+    if (!p) return;
+    const last = compiler.lastResult(p.ref);
+    const file = last?.main ? pdfPath(p.ref, last.main) : null;
+    if (!file || !fileExistsAbs(file)) {
+      apiError(res, 404, 'there is no PDF yet; compile the project first');
+      return;
+    }
+    const name = `${p.ref.name}.pdf`;
+    res
+      .set('Content-Type', 'application/pdf')
+      // The browser's PDF viewer draws this in a process of its own, not as a
+      // page of ours, and will not draw it at all under object-src 'none' or
+      // a sandbox; what the policy still has to say is who may frame it.
+      .set('Content-Security-Policy', "frame-ancestors 'self'")
+      .set('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${name}"`)
+      .set('Cache-Control', 'private, no-cache')
+      .sendFile(file);
+  });
+}
+
+function fileExistsAbs(file: string): boolean {
+  try {
+    return fsStatFile(file);
+  } catch {
+    return false;
+  }
 }

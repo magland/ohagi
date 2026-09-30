@@ -60,6 +60,11 @@ export class Docs {
     this.open.delete(key);
   }
 
+  /** Tell every open page of a project something about it, such as a new PDF. */
+  announceProject(dir: string, event: DocEvent): void {
+    for (const [key, doc] of this.open) if (key.startsWith(`${dir}\0`)) doc.announce(event);
+  }
+
   /** Write every open document of a project, as before compiling it. */
   flushProject(dir: string): void {
     for (const [key, doc] of this.open) if (key.startsWith(`${dir}\0`)) doc.flush();

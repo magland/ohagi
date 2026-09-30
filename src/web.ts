@@ -590,7 +590,9 @@ export function sendRaw(res: Response, rel: string, data: Buffer, download: bool
   res
     .status(200)
     .set('Content-Type', type)
-    .set('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+    // A PDF is drawn by the browser's own viewer, which refuses a sandbox; it
+    // runs apart from the page's origin, so all it needs is who may frame it.
+    .set('Content-Security-Policy', type === 'application/pdf' ? "frame-ancestors 'self'" : "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
     .set('Content-Disposition', `${inline || (!download && type.startsWith('text/')) ? 'inline' : 'attachment'}; filename="${base.replace(/["\\\r\n]/g, '_')}"`)
     .set('Cache-Control', 'private, no-cache')
     .send(data);

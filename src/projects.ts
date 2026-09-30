@@ -137,17 +137,23 @@ export function projectIsPrivate(ref: ProjectRef): boolean {
 
 // ---- project.json ----
 
+export type Engine = 'pdflatex' | 'xelatex' | 'lualatex';
+
 export interface ProjectMeta {
   description: string;
   created: string | null;
+  /** The TeX engine latexmk runs; pdflatex unless the project says otherwise. */
+  engine?: Engine;
 }
 
 export function projectMeta(ref: ProjectRef): ProjectMeta {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(ref.dir, 'project.json'), 'utf8')) as Record<string, unknown>;
+    const engine = raw.engine === 'xelatex' || raw.engine === 'lualatex' ? raw.engine : undefined;
     return {
       description: typeof raw.description === 'string' ? raw.description : '',
       created: typeof raw.created === 'string' ? raw.created : null,
+      ...(engine ? { engine } : {}),
     };
   } catch {
     return { description: '', created: null };

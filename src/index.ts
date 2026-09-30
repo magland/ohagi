@@ -76,8 +76,10 @@ async function serveCmd(args: string[], usage: () => never) {
   // is not starting the server should not pay for loading it.
   const { createApp } = await import('./server');
   const { Docs } = await import('./docs');
+  const { Compiler } = await import('./compile');
   const docs = new Docs();
-  const app = createApp(root, docs);
+  const compiler = new Compiler();
+  const app = createApp(root, docs, compiler);
   process.on('uncaughtException', (err) => {
     console.error('uncaught exception (the server continues):', err);
   });
@@ -101,6 +103,10 @@ async function serveCmd(args: string[], usage: () => never) {
       console.log('Sign in on the web with it, or from the command line:');
       console.log(`  ohagi login ${url}`);
       console.log('');
+    }
+    if (compiler.sandbox === 'none') {
+      console.log('Compiles run without the bubblewrap sandbox, which this machine cannot provide: TeX\'s own');
+      console.log('file and shell restrictions still apply, and lualatex is refused.');
     }
     console.log(`ohagi serving shelf ${root}`);
     console.log(`  ${url}`);

@@ -72,8 +72,21 @@ export type DocEvent =
   | { type: 'reset'; epoch: string; version: number; doc: string }
   | { type: 'presence'; peer: Peer }
   | { type: 'gone'; clientID: string }
+  /** The project was compiled; every open page of it is told, so its PDF pane can refresh. */
+  | { type: 'compiled'; result: CompiledSummary }
   /** The file went away under the page: renamed (to the path given) or deleted. */
   | { type: 'closed'; reason: 'moved' | 'deleted'; to?: string };
+
+/** What a page is told of a compile: the result without its log, which is fetched when wanted. */
+export interface CompiledSummary {
+  status: string;
+  main: string;
+  errors: { file: string | null; line: number | null; message: string }[];
+  warnings: number;
+  pdf: boolean;
+  durationMs: number;
+  finished: string;
+}
 
 export interface Subscriber {
   clientID: string;
@@ -321,6 +334,11 @@ export class LiveDoc {
       writeAtomic(this.logFile, lines.map((l) => l + '\n').join(''));
       this.logLines = lines.length;
     }
+  }
+
+  /** Tell every open page something about the project, not the file. */
+  announce(event: DocEvent): void {
+    for (const s of this.subscribers) s.send(event);
   }
 
   /**

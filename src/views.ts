@@ -481,6 +481,17 @@ ${projectTitle(ref, view.isPrivate)}
 <div id="editor" class="editor-pane" data-collection="${ref.collection}" data-project="${ref.name}" data-path="${view.path}" data-user="${
     viewer.auth.username
   }" data-csrf="${viewer.csrf}" data-writable="${view.canWrite ? '1' : ''}"></div>
+<section class="pdf-pane" aria-label="PDF">
+<div class="pdf-bar">
+<button type="button" class="btn btn-primary" id="recompile" title="Recompile (Ctrl+S or Ctrl+Enter)">${icon('play')}<span>Recompile</span></button>
+<span id="compile-status" class="muted small"></span>
+<button type="button" class="btn" id="show-issues" hidden></button>
+<a class="btn" id="pdf-download" href="/api/projects/${ref.collection}/${ref.name}/output.pdf?download=1" hidden>${icon('download')}<span>PDF</span></a>
+</div>
+<div class="pdf-issues" id="issues" hidden></div>
+<iframe class="pdf-frame" id="pdf-frame" title="PDF" hidden></iframe>
+<div class="pdf-empty muted" id="pdf-empty">Press Recompile to see the PDF.</div>
+</section>
 </div>`;
   return page(`${view.path} · ${ref.collection}/${ref.name}`, content, {
     crumbs: crumbs(ref.collection, ref.name),
