@@ -4,7 +4,7 @@ A self-hosted LaTeX editor with the shape of Overleaf, where several people edit
 
 ohagi is built from the same parts as [Mochi Forge](https://github.com/magland/mochiforge), its sibling (checked out in the next directory for development), as [dango](https://github.com/magland/dango) is. Where mochi has a *vault* of repositories, ohagi has a *shelf* of projects, grouped into collections in the same way, and the two look and behave alike: the same page layout, themes, sign-in, account pages, tokens, permissions, and command line.
 
-This is early. Collaborative editing, compiling to PDF, files, sign-in, members-only projects, project settings, user administration, and the command line work; git, backup, and deploying come next.
+This is early, but the parts are there: collaborative editing, compiling to PDF, files, git clone, sign-in, members-only projects, settings, user administration, backup, deploying to Fly.io, and the command line.
 
 ## Try it
 
@@ -21,14 +21,17 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 ## What it does
 
 - **Collaborative editing** of every text file in a project, `.tex`, `.bib`, `.sty`, and the rest, in CodeMirror 6, with each person's cursor and name shown to the others.
-- **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter.
+- **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter, and Auto compiles a moment after typing stops.
+- **git clone** of a project at its own address, read-only. The shelf commits a project's files a minute after editing stops, attributed to whoever edited, and again before any clone, so a clone or a pull has what the editors show.
 - **Files:** create, upload, rename or move, and delete, with anyone who has the file open following it; figures and other binary files are uploaded and served as they are.
 - **Projects in collections,** addressed as `/<collection>/<project>`, with mochi's naming rules.
 - **Members only.** A project is private: its collaborators, its collection's owners, and site admins see it, and nobody else learns it exists. Roles are mochi's: `read` opens the editor read-only, `write` edits, `admin` manages. A user owns the collection named after them.
 - **Sign-in and accounts** are mochi's own pages: tokens, passkeys, codes carried from another browser, and GitHub sign-in, with the same sliding sessions and CSRF checks.
-- **Project settings** in the shape of a repository's: the description, public or private, collaborators and their roles, and deletion.
+- **Project settings** in the shape of a repository's: the description, the compiler, public or private, collaborators and their roles, renaming or moving, and deletion; and a collection's owners.
 - **Administration** by mochi's own pages: users, their tokens and passkeys, the site-admin bit, sign-in with GitHub, and the theme.
-- **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `file`, `compile`, `user`, `api`, and `reset-token`. The `user` commands are mochi's own, against the same routes.
+- **Backup** over mochi's protocol, with mochi's client: `ohagi backup ~/backups/shelf` keeps an incremental copy, and its `current/` is a servable shelf.
+- **Deploying** to Fly.io with mochi's deploy: `ohagi deploy fly <app> --from-source` builds an image with a full TeX Live and runs it on one machine and one volume.
+- **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `file`, `compile`, `user`, `backup`, `deploy`, `api`, and `reset-token`. The `user`, `backup`, and `deploy` commands are mochi's own, against the same routes.
 
 ## How editing works
 
@@ -70,6 +73,7 @@ One detail is worth recording. latexmk is run without an output directory, becau
             main.tex.json     epoch, version, and hash of the text as last written
             main.tex.log      one line per accepted change
           build/              the last compile: src/ (a copy of files/ with latexmk's output) and result.json
+          repo.git/           the project's history, committed from files/, which git clone serves
 ```
 
 A file stays a plain file, written a moment after typing stops. Each accepted change is appended to the log before it is acknowledged, so after a crash loading replays whatever the file missed. The log also keeps recent history, so a page left open across a restart catches up from its own version rather than starting over. If the file on disk is not the text its metadata describes (it was edited with another tool while the server was stopped), a new *epoch* starts and open pages are sent the whole text.
