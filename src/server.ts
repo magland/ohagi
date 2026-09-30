@@ -7,6 +7,8 @@ import * as path from 'path';
 import { registerAccountWeb } from '../../mochiforge/src/accountweb';
 import { registerAdminWeb } from '../../mochiforge/src/adminweb';
 import { registerUsersApi } from '../../mochiforge/src/api/users';
+import { registerBackupRoutes } from '../../mochiforge/src/api/backup';
+import { shelfLayout } from './backup';
 import { registerAssets } from '../../mochiforge/src/assets';
 import { loadConfig } from '../../mochiforge/src/config';
 import { clientKey, createAuthLimiter, createLimiter } from '../../mochiforge/src/limit';
@@ -52,7 +54,7 @@ function isRateExempt(req: Request): boolean {
 
 // An editor's event stream must reach the page as it is written; compression
 // would buffer it. The sync pushes are small and gain nothing either.
-const UNCOMPRESSED = /^\/api\/projects\/[^/]+\/[^/]+\/(events|push|presence|output\.pdf)$/;
+const UNCOMPRESSED = /^\/api\/projects\/[^/]+\/[^/]+\/(events|push|presence|output\.pdf)$|^\/api\/backup\//;
 
 function isCompressible(req: Request, res: Response): boolean {
   if (UNCOMPRESSED.test(req.path)) return false;
@@ -163,6 +165,9 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, staticDi
 
   // JSON bodies, as large as a text file the editor accepts.
   app.use('/api', express.json({ limit: '16mb' }));
+  // Backup, over mochi's protocol: a manifest of the shelf's files and a bulk
+  // fetch of named ones, site admins only.
+  registerBackupRoutes(app, root, authLimiter, shelfLayout(root));
   // A finished compile is announced on every open editor's stream of the
   // project, so each PDF pane refreshes whoever pressed the button.
   compiler.onCompiled((ref, r) => {

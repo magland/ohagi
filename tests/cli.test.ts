@@ -189,3 +189,30 @@ test('compile from the command line, by anyone who can read the project', async 
     await srv.stop();
   }
 });
+
+test('backup copies a shelf over HTTP, without what a compile left', async () => {
+  const srv = await serve();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-backup-'));
+  try {
+    const compiled = await cli(srv.base, EXAMPLE_TOKENS.alice, ['compile', 'alice/paper']);
+    assert.equal(compiled.code, 0, compiled.stdout + compiled.stderr);
+    assert.ok(fs.existsSync(path.join(srv.root, 'collections/alice/projects/paper/build')));
+    // Only a site admin may take the whole shelf.
+    assert.notEqual((await cli(srv.base, EXAMPLE_TOKENS.alice, ['backup', dir])).code, 0);
+    const r = await cli(srv.base, EXAMPLE_TOKENS.dev, ['backup', dir]);
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    const current = path.join(dir, 'current');
+    assert.ok(fs.existsSync(path.join(current, 'shelf.json')));
+    assert.ok(fs.existsSync(path.join(current, '.secret')) || !fs.existsSync(path.join(srv.root, '.secret')));
+    assert.equal(
+      fs.readFileSync(path.join(current, 'collections/alice/projects/paper/files/main.tex'), 'utf8'),
+      fs.readFileSync(path.join(srv.root, 'collections/alice/projects/paper/files/main.tex'), 'utf8')
+    );
+    assert.ok(fs.existsSync(path.join(current, 'collections/alice/projects/paper/access.json')));
+    assert.ok(!fs.existsSync(path.join(current, 'collections/alice/projects/paper/build')), 'build/ is left out');
+    const verify = await cli(srv.base, EXAMPLE_TOKENS.dev, ['backup', 'verify', dir]);
+    assert.equal(verify.code, 0, verify.stdout + verify.stderr);
+  } finally {
+    await srv.stop();
+  }
+});

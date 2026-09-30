@@ -24,6 +24,8 @@ import { resetTokenCmd, resetTokenHelp } from '../../mochiforge/src/reset-token-
 import { userAdminCommands, userCommands } from '../../mochiforge/src/cli/user-cmd';
 import { bootstrapVault } from '../../mochiforge/src/vault';
 import { shelfCommands } from './commands';
+import { makeBackupCommands } from '../../mochiforge/src/cli/backup-cmd';
+import { OHAGI_BACKUP } from './backup';
 
 // The ohagi command: serve a shelf, or talk to a served one the way `mochi`
 // talks to a vault. Built on mochiforge's CLI framework, so the option
@@ -259,6 +261,8 @@ token once. Options: -p/--port <n> (default 3000), --host <addr> (default
   },
 ];
 
+commands.push(...makeBackupCommands(OHAGI_BACKUP));
+
 const cli: Cli = {
   name: 'ohagi',
   groups: [
@@ -267,6 +271,7 @@ const cli: Cli = {
     { name: 'collab', summary: "Manage a project's collaborators" },
     { name: 'file', summary: "Copy, move, and delete a project's files" },
     { name: 'user', summary: 'Manage the shelf’s users and their tokens (site admin)' },
+    { name: 'backup', summary: 'Copy a shelf to a directory on this machine' },
   ],
   commands,
   footer: FOOTER,
