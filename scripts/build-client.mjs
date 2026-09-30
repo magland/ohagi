@@ -16,3 +16,5 @@ await build({
   logLevel: 'warning',
 });
 copyFileSync('client/ohagi.css', 'dist/static/ohagi.css');
+// pdf.js draws in a worker of its own, served beside the bundle.
+copyFileSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs', 'dist/static/pdf.worker.mjs');

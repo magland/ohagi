@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process';
+import { execFile, spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -417,4 +417,49 @@ export class Compiler {
       pdf: hasPdf,
     });
   }
+}
+
+// ---- SyncTeX: from a point in the PDF back to the source ----
+
+export interface SourceSpot {
+  file: string;
+  line: number;
+}
+
+/**
+ * The project file and line that produced a point on a page of the last
+ * compile's PDF, by `synctex edit` over the .synctex.gz latexmk wrote beside
+ * it. x and y are in PDF points from the page's top left, which is what
+ * synctex takes. null when the point maps to nothing, or to a file that is not
+ * the project's own (a class or package from TeX Live).
+ *
+ * The .synctex.gz is TeX's output, and a document can write files in its
+ * directory, so synctex reads something a document could have shaped: it
+ * runs under the compile's limits, and inside the namespace when there is one.
+ */
+export function synctexEdit(ref: ProjectRef, sandbox: 'bubblewrap' | 'none', main: string, page: number, x: number, y: number): Promise<SourceSpot | null> {
+  const build = buildDir(ref);
+  const src = path.join(build, 'src');
+  const pdf = main.replace(/\.tex$/, '') + '.pdf';
+  if (!fs.existsSync(path.join(src, pdf))) return Promise.resolve(null);
+  const inside = sandbox === 'bubblewrap';
+  const query = ['synctex', 'edit', '-o', `${page}:${x.toFixed(2)}:${y.toFixed(2)}:${pdf}`];
+  const argv = ['prlimit', '--as=536870912', '--cpu=10', '--', ...(inside ? ['bwrap', ...sandboxArgs(build), ...query] : query)];
+  return new Promise((resolve) => {
+    execFile(argv[0], argv.slice(1), { cwd: inside ? undefined : src, timeout: 10000, env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/tmp' } }, (err, stdout) => {
+      if (err) return resolve(null);
+      const input = /^Input:(.+)$/m.exec(stdout);
+      const line = /^Line:(\d+)$/m.exec(stdout);
+      if (!input || !line) return resolve(null);
+      // The path as TeX saw it: /work/src/./chapters/a.tex inside the
+      // namespace, or this machine's build/src path outside it.
+      const seen = input[1].trim();
+      const roots = ['/work/src/', src + path.sep];
+      const root = roots.find((r) => seen.startsWith(r));
+      if (!root) return resolve(null);
+      const rel = path.posix.normalize(seen.slice(root.length)).replace(/^\.\//, '');
+      if (!listFiles(ref).some((f) => f.path === rel)) return resolve(null);
+      resolve({ file: rel, line: parseInt(line[1], 10) });
+    });
+  });
 }

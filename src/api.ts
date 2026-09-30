@@ -21,7 +21,7 @@ import {
 import { userExists } from '../../mochiforge/src/vault';
 import { checkCsrf, getViewer } from '../../mochiforge/src/session';
 import { AuthResult } from '../../mochiforge/src/vault';
-import { Compiler, pdfPath } from './compile';
+import { Compiler, pdfPath, synctexEdit } from './compile';
 import { DocNotFound, Docs } from './docs';
 import { History } from './history';
 import { DocEvent, LiveDoc, PushRefused } from './livedoc';
@@ -509,6 +509,35 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       .set('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${name}"`)
       .set('Cache-Control', 'private, no-cache')
       .sendFile(file);
+  });
+
+  // Where a point on the PDF came from, for a double-click in the PDF pane:
+  // ?page=&x=&y=, in PDF points from the page's top left.
+  app.get('/api/projects/:collection/:project/synctex', async (req, res, next) => {
+    const p = projectFor(req, res, 'read', false);
+    if (!p) return;
+    const page = Number(req.query.page);
+    const x = Number(req.query.x);
+    const y = Number(req.query.y);
+    if (!Number.isInteger(page) || page < 1 || !Number.isFinite(x) || !Number.isFinite(y)) {
+      apiError(res, 400, 'page, x, and y required');
+      return;
+    }
+    const last = compiler.lastResult(p.ref);
+    if (!last?.main) {
+      apiError(res, 404, 'this project has not been compiled yet');
+      return;
+    }
+    try {
+      const spot = await synctexEdit(p.ref, compiler.sandbox, last.main, page, x, y);
+      if (!spot) {
+        apiError(res, 404, 'nothing in the project is there');
+        return;
+      }
+      res.json(spot);
+    } catch (e) {
+      next(e);
+    }
   });
 }
 

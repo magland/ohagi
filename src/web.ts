@@ -62,7 +62,7 @@ import * as fs from 'fs';
 
 const form = urlencodedForm('64kb');
 
-export function registerWeb(app: Express, root: string, docs: Docs, history: History, editorTag: string): void {
+export function registerWeb(app: Express, root: string, docs: Docs, history: History, editorTag: string, workerTag: string): void {
   const notFound = (res: Response, viewer: Viewer | null, message = 'Not found') =>
     res.status(404).type('html').send(views.errorPage(404, message, { viewer }));
 
@@ -333,7 +333,8 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
       views.editorPage(
         { ref: p.ref, path: rel, files: listFiles(p.ref), canWrite: p.writable, isPrivate: projectIsPrivate(p.ref) },
         p.viewer,
-        editorTag
+        editorTag,
+        workerTag
       )
     );
   });

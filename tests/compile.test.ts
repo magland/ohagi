@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { Compiler, bubblewrapWorks, parseLog } from '../src/compile';
+import { Compiler, bubblewrapWorks, parseLog, synctexEdit } from '../src/compile';
 import { createProject, filesDir } from '../src/projects';
 
 // Compiling, against the TeX Live on this machine: a document compiles, its
@@ -114,6 +114,29 @@ test('lualatex cannot open files outside the project from Lua, inside the sandbo
   assert.match(text, /lua-refused/);
   assert.doesNotMatch(text, /LUA-READ/);
 });
+
+for (const sandbox of ['bubblewrap', 'none'] as const) {
+  test(`SyncTeX maps a point on the PDF back to the file and line (sandbox: ${sandbox})`, { skip: !hasTeX || (sandbox === 'bubblewrap' && !hasBwrap) }, async () => {
+    const c = new Compiler({ sandbox });
+    const { ref } = shelfWith({
+      'main.tex': doc('First paragraph, in main.\n\n\\input{chapters/two}\n\nLast paragraph.'),
+      'chapters/two.tex': 'An opening line.\n\nA second paragraph, in the chapter file.\n',
+    });
+    const r = await c.compile(ref);
+    assert.equal(r.status, 'success', r.log.slice(-2000));
+    // Where TeX put line 3 of the chapter file, asked the other way round.
+    const src = path.join(ref.dir, 'build/src');
+    const view = execFileSync('synctex', ['view', '-i', '3:1:chapters/two.tex', '-o', 'main.pdf'], { cwd: src, encoding: 'utf8' });
+    const page = Number(/^Page:(\d+)$/m.exec(view)![1]);
+    const x = Number(/^x:([\d.]+)$/m.exec(view)![1]);
+    const y = Number(/^y:([\d.]+)$/m.exec(view)![1]);
+    const spot = await synctexEdit(ref, c.sandbox, 'main.tex', page, x + 5, y - 3);
+    assert.deepEqual(spot, { file: 'chapters/two.tex', line: 3 });
+    // A point in the margin, where nothing was typeset, maps to nothing of the project's.
+    const nowhere = await synctexEdit(ref, c.sandbox, 'main.tex', 1, 2, 2);
+    assert.ok(nowhere === null || nowhere.file === 'main.tex');
+  });
+}
 
 test('lualatex is refused without the sandbox', { skip: !hasTeX }, async () => {
   const c = new Compiler({ sandbox: 'none' });

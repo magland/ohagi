@@ -470,7 +470,7 @@ export interface EditorView {
   isPrivate: boolean;
 }
 
-export function editorPage(view: EditorView, viewer: Viewer, editorTag: string): string {
+export function editorPage(view: EditorView, viewer: Viewer, editorTag: string, workerTag: string): string {
   const { ref } = view;
   const fileRows = view.files.map((f) => {
     const current = f.path === view.path;
@@ -497,7 +497,7 @@ ${projectTitle(ref, view.isPrivate)}
   }<ul>${fileRows}</ul></nav>
 <div id="editor" class="editor-pane" data-collection="${ref.collection}" data-project="${ref.name}" data-path="${view.path}" data-user="${
     viewer.auth.username
-  }" data-csrf="${viewer.csrf}" data-writable="${view.canWrite ? '1' : ''}"></div>
+  }" data-csrf="${viewer.csrf}" data-writable="${view.canWrite ? '1' : ''}" data-pdf-worker="/assets/pdf.worker.mjs?v=${workerTag}"></div>
 <section class="pdf-pane" aria-label="PDF">
 <div class="pdf-bar">
 <button type="button" class="btn btn-primary" id="recompile" title="Recompile (Ctrl+S or Ctrl+Enter)">${icon('play')}<span>Recompile</span></button>
@@ -507,7 +507,7 @@ ${projectTitle(ref, view.isPrivate)}
 <a class="btn" id="pdf-download" href="/api/projects/${ref.collection}/${ref.name}/output.pdf?download=1" hidden>${icon('download')}<span>PDF</span></a>
 </div>
 <div class="pdf-issues" id="issues" hidden></div>
-<iframe class="pdf-frame" id="pdf-frame" title="PDF" hidden></iframe>
+<div class="pdf-pages" id="pdf-pages" hidden></div>
 <div class="pdf-empty muted" id="pdf-empty">Press Recompile to see the PDF.</div>
 </section>
 </div>`;

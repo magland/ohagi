@@ -20,6 +20,7 @@ import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { collab, getClientID } from '@codemirror/collab';
 import { CompiledSummary, Peer, Status, Sync } from './sync';
+import { PdfView } from './pdfview';
 
 // The editor page: CodeMirror 6 with the collab extension, synced through
 // sync.ts, and the other people in the file drawn as coloured cursors. Who
@@ -200,7 +201,7 @@ async function main() {
   const compileStatus = $('compile-status');
   const issuesBtn = $('show-issues') as HTMLButtonElement;
   const issues = $('issues');
-  const frame = $('pdf-frame') as HTMLIFrameElement;
+  const pagesBox = $('pdf-pages');
   const empty = $('pdf-empty');
   const download = $('pdf-download');
   let shownPdf = '';
@@ -211,6 +212,18 @@ async function main() {
     view.dispatch({ selection: { anchor: at }, scrollIntoView: true });
     view.focus();
   };
+
+  // A double-click on the PDF asks SyncTeX where that point came from, and
+  // goes there: in this editor when it is this file, else to that file's.
+  const pdf = new PdfView(pagesBox, root.dataset.pdfWorker!, (pt) => {
+    const q = new URLSearchParams({ page: String(pt.page), x: pt.x.toFixed(2), y: pt.y.toFixed(2) });
+    void fetch(`${api}/synctex?${q}`).then(async (res) => {
+      if (!res.ok) return;
+      const spot = (await res.json()) as { file: string; line: number };
+      if (spot.file === path) goToLine(spot.line);
+      else location.href = `${fileUrl(spot.file)}#L${spot.line}`;
+    });
+  });
 
   const showResult = (r: CompiledSummary, log?: string) => {
     const secs = (r.durationMs / 1000).toFixed(1);
@@ -257,10 +270,12 @@ async function main() {
     else if (r.status !== 'success') issues.hidden = false;
     if (r.pdf && r.finished !== shownPdf) {
       shownPdf = r.finished;
-      frame.src = `${api}/output.pdf?t=${encodeURIComponent(r.finished)}#view=FitH`;
-      frame.hidden = false;
+      pagesBox.hidden = false;
       empty.hidden = true;
       download.hidden = false;
+      void pdf.load(`${api}/output.pdf?t=${encodeURIComponent(r.finished)}`).catch((e) => {
+        compileStatus.textContent = `The PDF could not be shown: ${e instanceof Error ? e.message : e}`;
+      });
     }
   };
   issuesBtn.addEventListener('click', () => {

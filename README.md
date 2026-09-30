@@ -21,7 +21,7 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 ## What it does
 
 - **Collaborative editing** of every text file in a project, `.tex`, `.bib`, `.sty`, and the rest, in CodeMirror 6, with each person's cursor and name shown to the others.
-- **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter, and Auto compiles a moment after typing stops.
+- **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter, and Auto compiles a moment after typing stops. Double-clicking the PDF goes to the source that made that spot (SyncTeX), in whichever file it is.
 - **git clone** of a project at its own address, read-only. The shelf commits a project's files a minute after editing stops, attributed to whoever edited, and again before any clone, so a clone or a pull has what the editors show.
 - **Files:** create, upload, rename or move, and delete, with anyone who has the file open following it; figures and other binary files are uploaded and served as they are.
 - **Projects in collections,** addressed as `/<collection>/<project>`, with mochi's naming rules.
