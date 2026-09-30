@@ -48,5 +48,19 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magland/ohagi.git"
+  },
+  "homepage": "https://github.com/magland/ohagi#readme",
+  "bugs": "https://github.com/magland/ohagi/issues",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }
