@@ -306,3 +306,123 @@ export function deleteCollection(root: string, collection: string): void {
   if (listProjectNames(root, collection).length > 0) throw new ProjectError(`Collection ${collection} still holds projects.`, 'exists');
   fs.rmSync(collectionDir(root, collection), { recursive: true, force: true });
 }
+
+// ---- changing files ----
+//
+// Every path is a project-relative one checked by cleanPath, so nothing here
+// reaches outside files/. Writing a file creates the directories above it,
+// and removing one removes directories it leaves empty, so a project never
+// holds an empty directory it did not ask for. Each file's editing state
+// (collab/<path>.json and .log) moves and goes with it.
+
+/** The largest file an upload or a write may bring. */
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+/** Written beside and renamed over, so a reader never sees half a file. */
+function writeBufferAtomic(file: string, data: Buffer): void {
+  // A dot-name, so a listing of the project never shows it.
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}`);
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
+function fileOf(ref: ProjectRef, rel: string): { clean: string; full: string } {
+  const clean = cleanPath(rel);
+  if (!clean) throw new ProjectError(`Not a usable file name: ${rel || '(empty)'}. Use letters, digits, and the usual punctuation, with / between directories, and no name starting with a dot.`);
+  return { clean, full: path.join(filesDir(ref.dir), clean) };
+}
+
+function collabFiles(ref: ProjectRef, clean: string): string[] {
+  return [path.join(collabDir(ref.dir), `${clean}.json`), path.join(collabDir(ref.dir), `${clean}.log`)];
+}
+
+/** A directory in the way of a file, or a file in the way of a directory, said in words. */
+function checkPlace(ref: ProjectRef, clean: string): void {
+  const parts = clean.split('/');
+  let at = filesDir(ref.dir);
+  for (let i = 0; i < parts.length - 1; i++) {
+    at = path.join(at, parts[i]);
+    if (fs.existsSync(at) && !fs.statSync(at).isDirectory()) {
+      throw new ProjectError(`${parts.slice(0, i + 1).join('/')} is a file, so nothing can go inside it.`, 'exists');
+    }
+  }
+  const full = path.join(filesDir(ref.dir), clean);
+  if (fs.existsSync(full) && fs.statSync(full).isDirectory()) throw new ProjectError(`${clean} is a directory.`, 'exists');
+}
+
+export function fileExists(ref: ProjectRef, rel: string): boolean {
+  const clean = cleanPath(rel);
+  if (!clean) return false;
+  try {
+    return fs.statSync(path.join(filesDir(ref.dir), clean)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Write a file, creating it; replacing one that exists only when asked to. Returns its clean path. */
+export function writeFile(ref: ProjectRef, rel: string, data: Buffer, opts: { overwrite: boolean }): string {
+  const { clean, full } = fileOf(ref, rel);
+  if (data.length > MAX_FILE_BYTES) throw new ProjectError(`${clean} is larger than ${MAX_FILE_BYTES / (1024 * 1024)} MB.`);
+  checkPlace(ref, clean);
+  if (!opts.overwrite && fs.existsSync(full)) throw new ProjectError(`${clean} already exists.`, 'exists');
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  writeBufferAtomic(full, data);
+  return clean;
+}
+
+export function readFile(ref: ProjectRef, rel: string): Buffer {
+  const { clean, full } = fileOf(ref, rel);
+  if (!fileExists(ref, clean)) throw new ProjectError(`There is no file ${clean}.`, 'missing');
+  return fs.readFileSync(full);
+}
+
+/** Remove directories under files/ (and collab/) that a move or a removal left empty. */
+function pruneEmpty(base: string, clean: string): void {
+  let dir = path.dirname(path.join(base, clean));
+  while (dir.startsWith(base + path.sep)) {
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      return;
+    }
+    dir = path.dirname(dir);
+  }
+}
+
+/** Move a file, and its editing history with it. The caller has written and closed any open editor first. */
+export function renameFile(ref: ProjectRef, from: string, to: string): { from: string; to: string } {
+  const a = fileOf(ref, from);
+  const b = fileOf(ref, to);
+  if (!fileExists(ref, a.clean)) throw new ProjectError(`There is no file ${a.clean}.`, 'missing');
+  if (a.clean === b.clean) return { from: a.clean, to: b.clean };
+  checkPlace(ref, b.clean);
+  if (fs.existsSync(b.full)) throw new ProjectError(`${b.clean} already exists.`, 'exists');
+  fs.mkdirSync(path.dirname(b.full), { recursive: true });
+  fs.renameSync(a.full, b.full);
+  const [fromMeta, fromLog] = collabFiles(ref, a.clean);
+  const [toMeta, toLog] = collabFiles(ref, b.clean);
+  for (const [x, y] of [
+    [fromMeta, toMeta],
+    [fromLog, toLog],
+  ]) {
+    if (fs.existsSync(x)) {
+      fs.mkdirSync(path.dirname(y), { recursive: true });
+      fs.renameSync(x, y);
+    }
+  }
+  pruneEmpty(filesDir(ref.dir), a.clean);
+  pruneEmpty(collabDir(ref.dir), a.clean);
+  return { from: a.clean, to: b.clean };
+}
+
+/** Remove a file and its editing history. The caller has closed any open editor first. */
+export function removeFile(ref: ProjectRef, rel: string): string {
+  const { clean, full } = fileOf(ref, rel);
+  if (!fileExists(ref, clean)) throw new ProjectError(`There is no file ${clean}.`, 'missing');
+  fs.unlinkSync(full);
+  for (const f of collabFiles(ref, clean)) fs.rmSync(f, { force: true });
+  pruneEmpty(filesDir(ref.dir), clean);
+  pruneEmpty(collabDir(ref.dir), clean);
+  return clean;
+}

@@ -1,5 +1,7 @@
-import { api } from '../../mochiforge/src/cli-api';
-import { CliError, EXIT_USAGE } from '../../mochiforge/src/cli/exit';
+import * as fs from 'fs';
+import * as path from 'path';
+import { api, requestBytes } from '../../mochiforge/src/cli-api';
+import { CliError, EXIT_USAGE, exitCodeForStatus } from '../../mochiforge/src/cli/exit';
 import { JSON_OPTION, jsonMode, pickFields, pickObject, printJson } from '../../mochiforge/src/cli/output';
 import { Command, Invocation, OptionSpec } from '../../mochiforge/src/cli/parse';
 import { TARGET_OPTIONS, targetFrom } from '../../mochiforge/src/cli/target';
@@ -246,6 +248,107 @@ admin may also change its settings and who is on it.
       const p = projectArg(inv, 0);
       const data = await api(target, 'DELETE', `${p.path}/collaborators/${encodeURIComponent(inv.args[1])}`);
       print(inv, data, () => console.log(`Removed ${inv.args[1]} from ${p.collection}/${p.project}`));
+    },
+  },
+
+  // ---- files ----
+  {
+    path: ['file', 'get'],
+    summary: "Copy a project's file to this machine",
+    description: `  ohagi file get alice/paper main.tex            writes ./main.tex
+  ohagi file get alice/paper figures/a.png -o -  writes it to stdout`,
+    args: [
+      { name: 'project', required: true },
+      { name: 'path', required: true },
+    ],
+    options: [{ name: 'output', short: 'o', type: 'string', value: '<file>', summary: "Where to write it ('-' for stdout)" }, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const p = projectArg(inv, 0);
+      const r = await requestBytes(target, 'GET', `${p.path}/raw?path=${encodeURIComponent(inv.args[1])}`);
+      if (!r.ok) {
+        process.stderr.write(r.body.toString('utf8') + '\n');
+        process.exit(exitCodeForStatus(r.status));
+      }
+      const out = inv.str('output') ?? path.basename(inv.args[1]);
+      if (out === '-') process.stdout.write(r.body);
+      else {
+        fs.writeFileSync(out, r.body);
+        console.log(`Wrote ${out} (${r.body.length} bytes)`);
+      }
+    },
+  },
+  {
+    path: ['file', 'put'],
+    summary: 'Copy a file from this machine into a project',
+    description: `  ohagi file put alice/paper figure.png --as figures/figure.png
+
+Someone editing the file sees its new text. A file that is already there is
+replaced only with --overwrite.`,
+    args: [
+      { name: 'project', required: true },
+      { name: 'local', required: true },
+    ],
+    options: [
+      { name: 'as', type: 'string', value: '<path>', summary: 'Its path in the project (default: the local name)' },
+      { name: 'overwrite', type: 'boolean', summary: 'Replace a file that is already there' },
+      JSON_OPTION,
+      ...TARGET_OPTIONS,
+    ],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const p = projectArg(inv, 0);
+      const data = fs.readFileSync(inv.args[1]);
+      const dest = inv.str('as') ?? path.basename(inv.args[1]);
+      const q = `path=${encodeURIComponent(dest)}${inv.bool('overwrite') ? '&overwrite=1' : ''}`;
+      const resp = await fetch(`${target.host}${p.path}/raw?${q}`, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${target.token}`, 'content-type': 'application/octet-stream' },
+        body: data,
+      });
+      const text = await resp.text();
+      if (!resp.ok) {
+        let message = text;
+        try {
+          message = JSON.parse(text).error ?? text;
+        } catch {
+          // not JSON; the text says it
+        }
+        throw new CliError(message, exitCodeForStatus(resp.status));
+      }
+      const out = JSON.parse(text) as Record<string, unknown>;
+      print(inv, out, () => console.log(`Wrote ${p.collection}/${p.project}:${out.path} (${out.size} bytes)`));
+    },
+  },
+  {
+    path: ['file', 'rm'],
+    summary: 'Delete a file from a project',
+    args: [
+      { name: 'project', required: true },
+      { name: 'path', required: true },
+    ],
+    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const p = projectArg(inv, 0);
+      const data = await api(target, 'DELETE', `${p.path}/raw?path=${encodeURIComponent(inv.args[1])}`);
+      print(inv, data, () => console.log(`Deleted ${data.deleted}`));
+    },
+  },
+  {
+    path: ['file', 'mv'],
+    summary: 'Rename or move a file within a project',
+    args: [
+      { name: 'project', required: true },
+      { name: 'from', required: true },
+      { name: 'to', required: true },
+    ],
+    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const p = projectArg(inv, 0);
+      const data = await api(target, 'POST', `${p.path}/rename`, { from: inv.args[1], to: inv.args[2] });
+      print(inv, data, () => console.log(`Renamed ${data.from} to ${data.to}`));
     },
   },
 ];

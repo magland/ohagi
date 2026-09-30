@@ -71,7 +71,9 @@ export type DocEvent =
   | { type: 'updates'; from: number; updates: UpdateJSON[] }
   | { type: 'reset'; epoch: string; version: number; doc: string }
   | { type: 'presence'; peer: Peer }
-  | { type: 'gone'; clientID: string };
+  | { type: 'gone'; clientID: string }
+  /** The file went away under the page: renamed (to the path given) or deleted. */
+  | { type: 'closed'; reason: 'moved' | 'deleted'; to?: string };
 
 export interface Subscriber {
   clientID: string;
@@ -94,7 +96,8 @@ function newEpoch(): string {
 }
 
 function writeAtomic(file: string, data: string): void {
-  const tmp = `${file}.tmp-${process.pid}`;
+  // A dot-name, so a listing of the project never shows it.
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}`);
   fs.writeFileSync(tmp, data);
   fs.renameSync(tmp, file);
 }
@@ -320,13 +323,42 @@ export class LiveDoc {
     }
   }
 
-  /** Stop: no further writes, and every open stream is ended. For a project being deleted. */
-  close(): void {
+  /**
+   * Stop: no further writes, and every open stream is told why, when there is
+   * something to tell, and ended. The caller writes first if the text should
+   * survive (a rename does; a deletion does not).
+   */
+  close(event?: DocEvent): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     this.flushedVersion = this.version;
-    for (const s of [...this.subscribers]) s.end?.();
+    for (const s of [...this.subscribers]) {
+      if (event) s.send(event);
+      s.end?.();
+    }
     this.subscribers.clear();
+    this.peers.clear();
+  }
+
+  /**
+   * The file on disk was replaced (an upload over it): take its text as a new
+   * history, since the old one cannot be continued into it, and send every
+   * open page the whole text, as a page from an old epoch is sent it.
+   */
+  reloadFromDisk(): void {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = null;
+    const raw = fs.readFileSync(this.file, 'utf8');
+    this.text = Text.of(raw.split(/\r\n?|\n/));
+    this.epoch = newEpoch();
+    this.base = 0;
+    this.updates = [];
+    writeAtomic(this.logFile, '');
+    this.logLines = 0;
+    this.writeMeta(raw);
+    this.peers.clear();
+    const event: DocEvent = { type: 'reset', epoch: this.epoch, version: this.version, doc: this.text.toString() };
+    for (const s of this.subscribers) s.send(event);
   }
 
   get dirty(): boolean {

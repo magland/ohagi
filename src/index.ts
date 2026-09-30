@@ -259,6 +259,7 @@ const cli: Cli = {
     { name: 'collection', summary: 'List, create, and own collections' },
     { name: 'project', summary: 'List, create, view, and delete projects' },
     { name: 'collab', summary: "Manage a project's collaborators" },
+    { name: 'file', summary: "Copy, move, and delete a project's files" },
     { name: 'user', summary: 'Manage the shelf’s users and their tokens (site admin)' },
   ],
   commands,

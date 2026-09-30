@@ -47,3 +47,9 @@ body.ohagi-editor > .pagefoot { display: none; }
   position: absolute; left: -2px; top: -1.3em; color: #fff; font: 11px/1.3 var(--font-ui);
   padding: 0 4px; border-radius: 3px 3px 3px 0; white-space: nowrap; pointer-events: none; opacity: 0.9;
 }
+
+.editor-files-actions { display: flex; gap: 4px; padding: 8px 8px 4px; border-bottom: 1px solid var(--border-soft); }
+.editor-files-actions a { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--radius); color: var(--fg-muted); font-size: var(--t-xs); }
+.editor-files-actions a:hover { background: var(--surface-hover); color: var(--fg); text-decoration: none; }
+.file-actions summary { padding: 0 6px; }
+table.listing.tree td:last-child { width: 1%; white-space: nowrap; }

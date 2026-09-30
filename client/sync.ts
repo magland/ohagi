@@ -27,7 +27,7 @@ export interface Peer {
   head: number;
 }
 
-export type Status = 'connecting' | 'synced' | 'saving' | 'offline' | 'error';
+export type Status = 'connecting' | 'synced' | 'saving' | 'offline' | 'error' | 'deleted';
 
 export interface SyncHost {
   state(): EditorState;
@@ -37,6 +37,8 @@ export interface SyncHost {
   status?(s: Status): void;
   peer?(p: Peer): void;
   gone?(clientID: string): void;
+  /** The file went away: renamed, to the editor address given, or deleted. Syncing has stopped. */
+  closed?(reason: 'moved' | 'deleted', to?: string): void;
 }
 
 export interface SyncOptions {
@@ -196,6 +198,10 @@ export class Sync {
       this.host.peer?.({ ...p, anchor, head });
     } else if (ev.type === 'gone') {
       this.host.gone?.(ev.clientID);
+    } else if (ev.type === 'closed') {
+      this.closed = true;
+      this.host.closed?.(ev.reason, ev.to);
+      return false;
     }
     return true;
   }

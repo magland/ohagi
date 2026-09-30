@@ -62,8 +62,9 @@ class Page {
   sync: Sync;
   resets = 0;
   peers = new Map<string, Peer>();
+  closedWith: { reason: string; to?: string } | null = null;
 
-  constructor(base: string, first: { epoch: string; version: number; doc: string }, readonly name: User) {
+  constructor(base: string, first: { epoch: string; version: number; doc: string }, readonly name: User, file = 'main.tex') {
     this.state = EditorState.create({ doc: first.doc, extensions: [collab({ startVersion: first.version })] });
     const clientID = getClientID(this.state);
     this.sync = new Sync(
@@ -78,12 +79,15 @@ class Page {
         },
         peer: (p) => this.peers.set(p.clientID, p),
         gone: (id) => this.peers.delete(id),
+        closed: (reason, to) => {
+          this.closedWith = { reason, to };
+        },
       },
       {
         base,
         collection: 'alice',
         project: 'paper',
-        path: 'main.tex',
+        path: file,
         epoch: first.epoch,
         headers: { Authorization: `Bearer ${EXAMPLE_TOKENS[name]}` },
       },
@@ -91,9 +95,9 @@ class Page {
     this.sync.start();
   }
 
-  static async open(base: string, name: User): Promise<Page> {
-    const first = await (await fetch(`${base}/api/projects/alice/paper/doc?path=main.tex`, { headers: auth(name) })).json();
-    return new Page(base, first, name);
+  static async open(base: string, name: User, file = 'main.tex'): Promise<Page> {
+    const first = await (await fetch(`${base}/api/projects/alice/paper/doc?path=${encodeURIComponent(file)}`, { headers: auth(name) })).json();
+    return new Page(base, first, name, file);
   }
 
   randomEdit(rand: () => number): void {
@@ -340,7 +344,8 @@ test('who sees what: members only, by mochi roles', async () => {
     const paper = await getPage(srv.base, '/alice/paper', alice);
     assert.match(paper.body, /href="\/alice\/paper\/edit\/main.tex"/);
     assert.match(paper.body, /href="\/alice\/paper\/edit\/refs.bib"/);
-    assert.doesNotMatch(paper.body, /href="[^"]*placeholder.png"/);
+    assert.match(paper.body, /href="\/alice\/paper\/raw\/figures\/placeholder.png"/);
+    assert.doesNotMatch(paper.body, /href="\/alice\/paper\/edit\/figures\/placeholder.png"/);
     assert.match(paper.body, /Private/);
     // The page is mochi's layout with ohagi's logo and stylesheet.
     assert.match(paper.body, /class="topbar"/);
@@ -499,6 +504,94 @@ test('collection settings: owners, and deleting only when empty', async () => {
     assert.equal((await post(dev, '/lab/settings/owners/remove', { csrf, username: 'alice' })).status, 303);
     assert.equal((await getPage(srv.base, '/lab/proposal', alice)).status, 404);
   } finally {
+    await srv.stop();
+  }
+});
+
+test('files: create, upload over an open file, rename and delete under an open editor', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  const open: Page[] = [];
+  try {
+    const bob = await signIn(srv.base, 'bob');
+    const csrf = /name="csrf" value="([^"]+)"/.exec((await getPage(srv.base, '/alice/paper/new', bob)).body)![1];
+    const post = (url: string, fields: Record<string, string>) =>
+      fetch(`${srv.base}${url}`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { Cookie: bob, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(fields).toString(),
+      });
+    const files = path.join(root, PAPER, 'files');
+
+    // A new file, in a new directory, opens in the editor.
+    const made = await post('/alice/paper/new', { csrf, path: 'chapters/intro.tex' });
+    assert.equal(made.status, 303);
+    assert.equal(made.headers.get('location'), '/alice/paper/edit/chapters/intro.tex');
+    assert.equal(fs.readFileSync(path.join(files, 'chapters/intro.tex'), 'utf8'), '');
+    assert.equal((await post('/alice/paper/new', { csrf, path: 'chapters/intro.tex' })).status, 409);
+    for (const bad of ['../escape.tex', '.hidden', 'main.tex/inside', '']) {
+      assert.ok([400, 409].includes((await post('/alice/paper/new', { csrf, path: bad })).status), bad);
+    }
+
+    // An upload over a file someone has open: their page takes the new text.
+    const page = await Page.open(srv.base, 'alice');
+    open.push(page);
+    await sleep(200);
+    const form = new FormData();
+    form.set('csrf', csrf);
+    form.set('dir', '');
+    form.append('files', new Blob(['\\documentclass{article}\\begin{document}Uploaded.\\end{document}\n']), 'main.tex');
+    form.append('files', new Blob([Buffer.from('89504e470d0a1a0a', 'hex')]), 'logo.png');
+    const up = await fetch(`${srv.base}/alice/paper/upload`, { method: 'POST', redirect: 'manual', headers: { Cookie: bob }, body: form });
+    assert.equal(up.status, 303);
+    const deadline = Date.now() + 5000;
+    while (!page.state.doc.toString().includes('Uploaded.') && Date.now() < deadline) await sleep(20);
+    assert.match(page.state.doc.toString(), /Uploaded\./);
+    assert.equal(page.resets, 1);
+    // ... and goes on editing it.
+    page.randomEdit(seeded(9));
+    await settled([page], srv);
+    assert.ok(fs.existsSync(path.join(files, 'logo.png')));
+
+    // The raw route serves what was uploaded, sandboxed.
+    const raw = await fetch(`${srv.base}/alice/paper/raw/logo.png`, { headers: { Cookie: bob } });
+    assert.equal(raw.headers.get('content-type'), 'image/png');
+    assert.match(raw.headers.get('content-security-policy') ?? '', /^sandbox/);
+    fs.writeFileSync(path.join(files, 'evil.html'), '<script>alert(1)</script>');
+    const html = await fetch(`${srv.base}/alice/paper/raw/evil.html`, { headers: { Cookie: bob } });
+    assert.match(html.headers.get('content-type') ?? '', /^text\/plain/);
+
+    // Renaming a file someone has open sends them after it, history and all.
+    const before = liveDoc(srv);
+    const epoch = before.epoch;
+    const version = before.version;
+    const moved = await post('/alice/paper/rename/main.tex', { csrf, to: 'paper.tex' });
+    assert.equal(moved.status, 303);
+    const waitClosed = Date.now() + 5000;
+    while (!page.closedWith && Date.now() < waitClosed) await sleep(20);
+    assert.deepEqual(page.closedWith, { reason: 'moved', to: '/alice/paper/edit/paper.tex' });
+    assert.ok(!fs.existsSync(path.join(files, 'main.tex')));
+    const after = srv.docs.get(paperRef(root), 'paper.tex');
+    assert.equal(after.epoch, epoch, 'the history moved with the file');
+    assert.equal(after.version, version);
+
+    // Deleting tells an open editor it is gone.
+    const page2 = await Page.open(srv.base, 'alice', 'chapters/intro.tex');
+    open.push(page2);
+    await sleep(200);
+    assert.equal((await post('/alice/paper/delete/chapters/intro.tex', { csrf })).status, 303);
+    const waitDeleted = Date.now() + 5000;
+    while (!page2.closedWith && Date.now() < waitDeleted) await sleep(20);
+    assert.deepEqual(page2.closedWith, { reason: 'deleted', to: undefined });
+    assert.ok(!fs.existsSync(path.join(files, 'chapters')), 'the emptied directory goes too');
+
+    // carol reads: she may download, not change.
+    const carol = await signIn(srv.base, 'carol');
+    assert.equal((await fetch(`${srv.base}/alice/paper/raw/logo.png`, { headers: { Cookie: carol } })).status, 200);
+    assert.equal((await getPage(srv.base, '/alice/paper/new', carol)).status, 403);
+  } finally {
+    for (const p of open) p.sync.close();
     await srv.stop();
   }
 });

@@ -25,6 +25,10 @@ export function fileUrl(ref: { collection: string; name: string }, rel: string):
   return `${projectUrl(ref)}/edit/${encPath(rel)}`;
 }
 
+export function rawUrl(ref: { collection: string; name: string }, rel: string): string {
+  return `${projectUrl(ref)}/raw/${encPath(rel)}`;
+}
+
 function crumbs(collection: string, project?: string): Html {
   return html` / <a href="${collectionUrl(collection)}">${collection}</a>${
     project ? html` / <a href="${projectUrl({ collection, name: project })}">${project}</a>` : ''
@@ -210,20 +214,41 @@ function projectTitle(ref: ProjectRef, isPrivate: boolean): Html {
   )}"><b>${ref.name}</b></a>${badge}</div>`;
 }
 
+/** mochi's "Add file" menu: write one here, or upload some. */
+function addFileMenu(ref: ProjectRef, dir: string): Html {
+  const q = dir ? `?dir=${esc(dir)}` : '';
+  return html`<details class="dropdown">
+<summary class="btn">${icon('plus')}<span>Add file</span>${icon('chevron-down', 'caret')}</summary>
+<div class="dropdown-menu dd-right">
+<a class="dd-item" href="${projectUrl(ref)}/new${q}">${icon('file')}<span class="dd-label">Create new file</span></a>
+<a class="dd-item" href="${projectUrl(ref)}/upload${q}">${icon('upload')}<span class="dd-label">Upload files</span></a>
+</div>
+</details>`;
+}
+
 export function projectPage(view: ProjectView, viewer: Viewer | null, baseUrl: string): string {
   const { ref } = view;
   const rows = view.files.map((f) => {
     const name = f.text
       ? html`${icon('file', 'icon file')}<a href="${fileUrl(ref, f.path)}">${f.path}</a>`
-      : html`${icon('file', 'icon file')}<span>${f.path}</span>`;
+      : html`${icon('file', 'icon file')}<a href="${rawUrl(ref, f.path)}">${f.path}</a>`;
+    const actions = view.canWrite
+      ? html`<details class="dropdown file-actions"><summary class="btn" aria-label="Actions for ${f.path}">${icon('kebab')}</summary>
+<div class="dropdown-menu dd-right">
+<a class="dd-item" href="${projectUrl(ref)}/rename/${encPath(f.path)}">${icon('pencil')}<span class="dd-label">Rename or move</span></a>
+<a class="dd-item" href="${rawUrl(ref, f.path)}?download=1">${icon('download')}<span class="dd-label">Download</span></a>
+<a class="dd-item" href="${projectUrl(ref)}/delete/${encPath(f.path)}">${icon('trash')}<span class="dd-label">Delete</span></a>
+</div></details>`
+      : '';
     return html`<tr><td class="tree-name">${name}</td><td class="tree-message muted small">${f.text ? '' : 'binary'}</td><td class="right small muted">${formatSize(
       f.size
-    )}</td><td class="tree-age right small">${timeTag(new Date(f.mtimeMs).toISOString())}</td></tr>`;
+    )}</td><td class="tree-age right small">${timeTag(new Date(f.mtimeMs).toISOString())}</td><td class="right">${actions}</td></tr>`;
   });
   const main = view.files.find((f) => f.path === 'main.tex') ?? view.files.find((f) => f.text && f.path.endsWith('.tex'));
   const openBtn = main
     ? html`<a class="btn btn-primary" href="${fileUrl(ref, main.path)}">${icon('pencil')}<span>Open editor</span></a>`
     : '';
+  const addBtn = view.canWrite ? addFileMenu(ref, '') : '';
   const members = view.members.length
     ? html`<ul class="member-list">${view.members.map(
         (m) => html`<li>${userLink(m.name, { face: 20 })}<span class="muted small">${m.role}</span></li>`
@@ -237,7 +262,7 @@ export function projectPage(view: ProjectView, viewer: Viewer | null, baseUrl: s
   const content = html`${projectTitle(ref, view.isPrivate)}
 ${projectTabs(ref, 'files', view.canWrite)}
 ${flash(view.msg)}
-<div class="toolbar"><div class="left"><span class="muted small">${view.files.length} file${view.files.length === 1 ? '' : 's'}</span></div><div class="right-group">${openBtn}</div></div>
+<div class="toolbar"><div class="left"><span class="muted small">${view.files.length} file${view.files.length === 1 ? '' : 's'}</span></div><div class="right-group">${addBtn}${openBtn}</div></div>
 <div class="repo-layout">
 <div class="repo-main">
 <table class="listing tree"><tbody>${rows.length ? rows : raw('<tr><td class="muted">No files yet.</td></tr>')}</tbody></table>
@@ -249,6 +274,81 @@ ${clone}
 </aside>
 </div>`;
   return page(`${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: projectUrl(ref) });
+}
+
+// ---- adding, renaming, and removing files ----
+
+function fileForm(ref: ProjectRef, viewer: Viewer, title: string, body: Html, path: string): string {
+  const content = html`${projectTitle(ref, true)}
+<div class="form-box wide">
+<h1>${title}</h1>
+${body}
+</div>`;
+  return page(`${title} - ${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path });
+}
+
+export function newFilePage(ref: ProjectRef, viewer: Viewer, preset: { path?: string }, error?: string): string {
+  return fileForm(
+    ref,
+    viewer,
+    'Create a new file',
+    html`${formError(error)}
+<form method="post" action="${projectUrl(ref)}/new">
+${csrfField(viewer)}
+<div class="field"><label for="path">Name</label><input type="text" id="path" name="path" value="${preset.path ?? ''}" placeholder="chapters/intro.tex" required autofocus>
+<p class="muted small">A path within the project, with <span class="mono">/</span> between directories, which are created as needed. The file starts empty and opens in the editor.</p></div>
+<div class="actions"><button type="submit" class="btn btn-primary">${icon('plus')}<span>Create file</span></button><a class="btn" href="${projectUrl(ref)}">Cancel</a></div>
+</form>`,
+    `${projectUrl(ref)}/new`
+  );
+}
+
+export function uploadPage(ref: ProjectRef, viewer: Viewer, dir: string, maxBytes: number, error?: string): string {
+  return fileForm(
+    ref,
+    viewer,
+    'Upload files',
+    html`${formError(error)}
+<form method="post" action="${projectUrl(ref)}/upload" enctype="multipart/form-data">
+<input type="hidden" name="csrf" value="${viewer.csrf}">
+<div class="field"><label for="dir">Into directory</label><input type="text" id="dir" name="dir" value="${dir}" placeholder="(the top of the project)"></div>
+<div class="field"><label for="files">Files</label><input type="file" id="files" name="files" multiple required>
+<p class="muted small">Up to ${Math.floor(maxBytes / (1024 * 1024))} MB in all. A file that is already there is replaced; if someone has it open in the editor, their page takes the new text.</p></div>
+<div class="actions"><button type="submit" class="btn btn-primary">${icon('upload')}<span>Upload</span></button><a class="btn" href="${projectUrl(ref)}">Cancel</a></div>
+</form>`,
+    `${projectUrl(ref)}/upload`
+  );
+}
+
+export function renameFilePage(ref: ProjectRef, viewer: Viewer, from: string, preset: { to?: string }, error?: string): string {
+  return fileForm(
+    ref,
+    viewer,
+    `Rename ${from}`,
+    html`${formError(error)}
+<form method="post" action="${projectUrl(ref)}/rename/${encPath(from)}">
+${csrfField(viewer)}
+<div class="field"><label for="to">New name</label><input type="text" id="to" name="to" value="${preset.to ?? from}" required autofocus>
+<p class="muted small">A path within the project; giving another directory moves the file there. Anyone editing it follows it to the new name.</p></div>
+<div class="actions"><button type="submit" class="btn btn-primary">${icon('pencil')}<span>Rename</span></button><a class="btn" href="${projectUrl(ref)}">Cancel</a></div>
+</form>`,
+    `${projectUrl(ref)}/rename/${encPath(from)}`
+  );
+}
+
+export function deleteFilePage(ref: ProjectRef, viewer: Viewer, rel: string, error?: string): string {
+  return fileForm(
+    ref,
+    viewer,
+    `Delete ${rel}`,
+    html`${formError(error)}
+<p>Deleting <span class="mono">${rel}</span> removes it and its editing history from the project. There is no undo.</p>
+<form method="post" action="${projectUrl(ref)}/delete/${encPath(rel)}">
+${csrfField(viewer)}
+<div class="actions"><button type="submit" class="btn btn-danger">${icon('trash')}<span>Delete file</span></button><a class="btn" href="${projectUrl(ref)}">Cancel</a></div>
+</form>`,
+    `${projectUrl(ref)}/delete/${encPath(rel)}`
+  );
 }
 
 // ---- a project's settings ----
@@ -362,7 +462,7 @@ export function editorPage(view: EditorView, viewer: Viewer, editorTag: string):
       ? html`<li><a class="${current ? 'current' : ''}" href="${fileUrl(ref, f.path)}"${
           current ? raw(' aria-current="page"') : ''
         }>${label}</a></li>`
-      : html`<li><span class="muted">${label}</span></li>`;
+      : html`<li><a class="muted" href="${rawUrl(ref, f.path)}" target="_blank" rel="noopener">${label}</a></li>`;
   });
   const readOnly = view.canWrite ? '' : html`<span class="counter" title="You can read this project but not change it">Read only</span>`;
   const content = html`<div class="editor-head">
@@ -371,7 +471,13 @@ ${projectTitle(ref, view.isPrivate)}
 <span id="peers" class="editor-peers"></span><span id="status" class="editor-status">Connecting</span>
 </div>
 <div class="editor-body">
-<nav class="editor-files" aria-label="Files"><ul>${fileRows}</ul></nav>
+<nav class="editor-files" aria-label="Files">${
+    view.canWrite
+      ? html`<div class="editor-files-actions"><a href="${projectUrl(ref)}/new" title="Create a new file">${icon('plus')}<span>New</span></a><a href="${projectUrl(
+          ref
+        )}/upload" title="Upload files">${icon('upload')}<span>Upload</span></a></div>`
+      : ''
+  }<ul>${fileRows}</ul></nav>
 <div id="editor" class="editor-pane" data-collection="${ref.collection}" data-project="${ref.name}" data-path="${view.path}" data-user="${
     viewer.auth.username
   }" data-csrf="${viewer.csrf}" data-writable="${view.canWrite ? '1' : ''}"></div>

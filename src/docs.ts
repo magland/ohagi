@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { LiveDoc } from './livedoc';
+import { DocEvent, LiveDoc } from './livedoc';
 import { ProjectRef, cleanPath, collabDir, filesDir, isEditableText } from './projects';
 
 // The files being edited, held in memory while anyone has them open (see
@@ -36,6 +36,33 @@ export class Docs {
   /** Write every open document that has unwritten changes. */
   flushAll(): void {
     for (const doc of this.open.values()) doc.flush();
+  }
+
+  /** The open document for a path, if it is open. */
+  peek(ref: ProjectRef, rel: string): LiveDoc | undefined {
+    const clean = cleanPath(rel);
+    return clean ? this.open.get(`${ref.dir}\0${clean}`) : undefined;
+  }
+
+  /**
+   * Close the open document for a path, if there is one, telling its pages
+   * why. A rename writes it first, so its text and history move with the
+   * file; a deletion does not.
+   */
+  closeFile(ref: ProjectRef, rel: string, event: DocEvent & { type: 'closed' }): void {
+    const clean = cleanPath(rel);
+    if (!clean) return;
+    const key = `${ref.dir}\0${clean}`;
+    const doc = this.open.get(key);
+    if (!doc) return;
+    if (event.reason === 'moved') doc.flush();
+    doc.close(event);
+    this.open.delete(key);
+  }
+
+  /** Write every open document of a project, as before compiling it. */
+  flushProject(dir: string): void {
+    for (const [key, doc] of this.open) if (key.startsWith(`${dir}\0`)) doc.flush();
   }
 
   /** Forget every open document of a project that is going away, without writing them. */

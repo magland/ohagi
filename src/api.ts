@@ -1,4 +1,4 @@
-import { Express, Request, Response } from 'express';
+import express, { Express, Request, Response } from 'express';
 import { apiError, requireApiAuth } from '../../mochiforge/src/api/auth';
 import { AuthLimiter } from '../../mochiforge/src/limit';
 import {
@@ -20,14 +20,22 @@ import { checkCsrf, getViewer } from '../../mochiforge/src/session';
 import { AuthResult } from '../../mochiforge/src/vault';
 import { DocNotFound, Docs } from './docs';
 import { DocEvent, LiveDoc, PushRefused } from './livedoc';
+import { fileUrl } from './views';
 import {
   ProjectError,
   ProjectRef,
   collectionExists,
   createCollection,
   createProject,
+  MAX_FILE_BYTES,
   deleteProject,
+  fileExists,
   findProject,
+  readFile,
+  removeFile,
+  renameFile,
+  writeFile,
+  cleanPath,
   listCollectionNames,
   listFiles,
   listProjectNames,
@@ -375,5 +383,67 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     }
     removeCollaborator(p.ref.dir, req.params.user);
     res.json({ collaborators: collaboratorList(p.ref) });
+  });
+
+  // ---- a project's files, as bytes ----
+
+  const sendProjectError = (res: Response, e: unknown): void => {
+    if (!(e instanceof ProjectError)) throw e;
+    apiError(res, e.code === 'missing' ? 404 : e.code === 'exists' ? 409 : 400, e.message);
+  };
+  const pathParam = (req: Request) => String(req.query.path ?? '');
+
+  app.get('/api/projects/:collection/:project/raw', (req, res) => {
+    const p = projectFor(req, res, 'read', false);
+    if (!p) return;
+    try {
+      res.type('application/octet-stream').send(readFile(p.ref, pathParam(req)));
+    } catch (e) {
+      sendProjectError(res, e);
+    }
+  });
+
+  // The body is the file's bytes, whatever their type; ?overwrite=1 replaces
+  // a file that exists, and someone editing it takes its new text.
+  app.put('/api/projects/:collection/:project/raw', express.raw({ type: () => true, limit: MAX_FILE_BYTES }), (req, res) => {
+    const p = projectFor(req, res, 'write', true);
+    if (!p) return;
+    const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    try {
+      const clean = writeFile(p.ref, pathParam(req), data, { overwrite: req.query.overwrite === '1' });
+      docs.peek(p.ref, clean)?.reloadFromDisk();
+      res.json({ path: clean, size: data.length });
+    } catch (e) {
+      sendProjectError(res, e);
+    }
+  });
+
+  app.delete('/api/projects/:collection/:project/raw', (req, res) => {
+    const p = projectFor(req, res, 'write', true);
+    if (!p) return;
+    try {
+      if (!fileExists(p.ref, pathParam(req))) throw new ProjectError(`There is no file ${pathParam(req)}.`, 'missing');
+      docs.closeFile(p.ref, pathParam(req), { type: 'closed', reason: 'deleted' });
+      res.json({ deleted: removeFile(p.ref, pathParam(req)) });
+    } catch (e) {
+      sendProjectError(res, e);
+    }
+  });
+
+  app.post('/api/projects/:collection/:project/rename', (req, res) => {
+    const p = projectFor(req, res, 'write', true);
+    if (!p) return;
+    const from = typeof body(req).from === 'string' ? (body(req).from as string) : '';
+    const to = typeof body(req).to === 'string' ? (body(req).to as string) : '';
+    try {
+      if (!fileExists(p.ref, from)) throw new ProjectError(`There is no file ${from}.`, 'missing');
+      const dest = cleanPath(to);
+      if (!dest) throw new ProjectError(`Not a usable file name: ${to || '(empty)'}.`);
+      if (dest !== from && fileExists(p.ref, dest)) throw new ProjectError(`${dest} already exists.`, 'exists');
+      docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: fileUrl(p.ref, dest) });
+      res.json(renameFile(p.ref, from, dest));
+    } catch (e) {
+      sendProjectError(res, e);
+    }
   });
 }

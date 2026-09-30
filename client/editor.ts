@@ -1,4 +1,4 @@
-import { EditorState, Extension, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
+import { Compartment, EditorState, Extension, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state';
 import {
   Decoration,
   DecorationSet,
@@ -119,6 +119,7 @@ const STATUS_TEXT: Record<Status, string> = {
   saving: 'Saving',
   offline: 'Offline, reconnecting',
   error: 'Error: reload the page',
+  deleted: 'This file was deleted',
 };
 
 async function main() {
@@ -148,12 +149,13 @@ async function main() {
   };
 
   let sync: Sync;
+  const editable = new Compartment();
   const makeState = (doc: string, version: number, clientID?: string): EditorState =>
     EditorState.create({
       doc,
       extensions: [
         collab({ startVersion: version, clientID }),
-        EditorState.readOnly.of(!writable),
+        editable.of(EditorState.readOnly.of(!writable)),
         peersField,
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -206,6 +208,16 @@ async function main() {
         names.set(p.clientID, p.name);
         showPeers();
         view.dispatch({ effects: setPeer.of({ id: p.clientID, cursor: { name: p.name, color: colorFor(p.name), anchor: p.anchor, head: p.head } }) });
+      },
+      closed: (reason, to) => {
+        if (reason === 'moved' && to) {
+          location.replace(to);
+          return;
+        }
+        view.dispatch({ effects: editable.reconfigure(EditorState.readOnly.of(true)) });
+        statusEl.textContent = STATUS_TEXT.deleted;
+        statusEl.className = 'editor-status status-error';
+        statusEl.dataset.state = 'deleted';
       },
       gone: (id) => {
         names.delete(id);

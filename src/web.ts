@@ -1,4 +1,7 @@
-import { Express, Request, Response } from 'express';
+import express, { Express, Request, Response } from 'express';
+import { boundaryOf, parseMultipart, partField, partFiles } from '../../mochiforge/src/multipart';
+import { csrfMatches } from '../../mochiforge/src/session';
+import { fail } from '../../mochiforge/src/web';
 import {
   Role,
   addCollectionOwner,
@@ -35,9 +38,15 @@ import {
   projectRole,
   projectUpdated,
   canWrite,
+  MAX_FILE_BYTES,
   deleteCollection,
   deleteProject,
+  fileExists,
   filesDir,
+  readFile,
+  removeFile,
+  renameFile,
+  writeFile,
   setProjectMeta,
 } from './projects';
 import * as views from './views';
@@ -418,4 +427,182 @@ export function registerWeb(app: Express, root: string, docs: Docs, editorTag: s
     deleteProject(p.ref);
     res.redirect(303, views.collectionUrl(p.ref.collection));
   });
+
+  // ---- files: create, upload, rename, delete, and read raw ----
+
+  const wild = (req: Request) => (req.params as unknown as Record<string, string>)[0] ?? '';
+  const projectPath = (ref: ProjectRef, msg?: string) => `${views.projectUrl(ref)}${msg ? `?msg=${encodeURIComponent(msg)}` : ''}`;
+
+  app.get('/:collection/:project/new', (req, res) => {
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    const dir = typeof req.query.dir === 'string' ? req.query.dir : '';
+    res.type('html').send(views.newFilePage(p.ref, p.viewer, { path: dir ? `${dir}/` : '' }));
+  });
+
+  app.post('/:collection/:project/new', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'write', true);
+    if (!p) return;
+    const rel = field(req, 'path').trim();
+    try {
+      const clean = writeFile(p.ref, rel, Buffer.alloc(0), { overwrite: false });
+      res.redirect(303, views.fileUrl(p.ref, clean));
+    } catch (e) {
+      if (!(e instanceof ProjectError)) throw e;
+      res.status(e.code === 'exists' ? 409 : 400).type('html').send(views.newFilePage(p.ref, p.viewer, { path: rel }, e.message));
+    }
+  });
+
+  app.get('/:collection/:project/upload', (req, res) => {
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    const dir = typeof req.query.dir === 'string' ? req.query.dir : '';
+    res.type('html').send(views.uploadPage(p.ref, p.viewer, dir, MAX_FILE_BYTES));
+  });
+
+  // The body arrives whole, under the same cap as one file, and is parsed by
+  // mochi's multipart reader; the CSRF value rides in the form, as it does in
+  // mochi's own upload.
+  const uploadBody = express.raw({ type: 'multipart/form-data', limit: MAX_FILE_BYTES + 1024 * 1024 });
+  app.post('/:collection/:project/upload', uploadBody, (req, res) => {
+    const viewer = getViewer(req, root);
+    if (!viewer) {
+      fail(res, 403, 'You must be signed in to do that.', null, '/login');
+      return;
+    }
+    const boundary = boundaryOf(req.get('content-type'));
+    if (!boundary || !Buffer.isBuffer(req.body)) {
+      fail(res, 400, 'That upload did not arrive as a form; try again.', viewer);
+      return;
+    }
+    const parts = parseMultipart(req.body, boundary);
+    if (!csrfMatches(req, partField(parts, 'csrf'), viewer)) {
+      fail(res, 403, 'The form has expired; go back, reload the page, and try again.', viewer);
+      return;
+    }
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    const dir = partField(parts, 'dir').trim().replace(/^\/+|\/+$/g, '');
+    const files = partFiles(parts, 'files').filter((f) => f.filename);
+    const rerender = (status: number, error: string) =>
+      res.status(status).type('html').send(views.uploadPage(p.ref, p.viewer, dir, MAX_FILE_BYTES, error));
+    if (!files.length) {
+      rerender(400, 'Choose at least one file.');
+      return;
+    }
+    const written: string[] = [];
+    try {
+      for (const f of files) {
+        // The browser sends a bare name; any directory in it is dropped.
+        const base = f.filename!.split(/[\\/]/).pop()!;
+        const rel = dir ? `${dir}/${base}` : base;
+        const clean = writeFile(p.ref, rel, f.data, { overwrite: true });
+        // Someone editing the file takes its new text.
+        docs.peek(p.ref, clean)?.reloadFromDisk();
+        written.push(clean);
+      }
+    } catch (e) {
+      if (!(e instanceof ProjectError)) throw e;
+      rerender(400, written.length ? `${e.message} (${written.join(', ')} uploaded before it.)` : e.message);
+      return;
+    }
+    res.redirect(303, projectPath(p.ref, `Uploaded ${written.join(', ')}.`));
+  });
+
+  app.get('/:collection/:project/rename/*', (req, res) => {
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    if (!fileExists(p.ref, wild(req))) return notFound(res, p.viewer, 'No such file in this project');
+    res.type('html').send(views.renameFilePage(p.ref, p.viewer, wild(req), {}));
+  });
+
+  app.post('/:collection/:project/rename/*', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'write', true);
+    if (!p) return;
+    const from = wild(req);
+    const to = field(req, 'to').trim();
+    try {
+      if (!fileExists(p.ref, from)) throw new ProjectError(`There is no file ${from}.`, 'missing');
+      const dest = cleanPath(to);
+      if (!dest) throw new ProjectError(`Not a usable file name: ${to || '(empty)'}.`);
+      if (dest !== from && fileExists(p.ref, dest)) throw new ProjectError(`${dest} already exists.`, 'exists');
+      // Anyone editing it is sent after it; the text is written first, so it
+      // and its history move with the file.
+      docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: views.fileUrl(p.ref, dest) });
+      const moved = renameFile(p.ref, from, dest);
+      res.redirect(303, projectPath(p.ref, `Renamed ${moved.from} to ${moved.to}.`));
+    } catch (e) {
+      if (!(e instanceof ProjectError)) throw e;
+      res.status(e.code === 'missing' ? 404 : e.code === 'exists' ? 409 : 400).type('html').send(views.renameFilePage(p.ref, p.viewer, from, { to }, e.message));
+    }
+  });
+
+  app.get('/:collection/:project/delete/*', (req, res) => {
+    const p = loadProjectAs(req, res, 'write');
+    if (!p) return;
+    if (!fileExists(p.ref, wild(req))) return notFound(res, p.viewer, 'No such file in this project');
+    res.type('html').send(views.deleteFilePage(p.ref, p.viewer, wild(req)));
+  });
+
+  app.post('/:collection/:project/delete/*', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'write', true);
+    if (!p) return;
+    const rel = wild(req);
+    if (!fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
+    docs.closeFile(p.ref, rel, { type: 'closed', reason: 'deleted' });
+    const gone = removeFile(p.ref, rel);
+    res.redirect(303, projectPath(p.ref, `Deleted ${gone}.`));
+  });
+
+  app.get('/:collection/:project/raw/*', (req, res) => {
+    const p = loadProject(req, res);
+    if (!p) return;
+    let data: Buffer;
+    try {
+      data = readFile(p.ref, wild(req));
+    } catch (e) {
+      if (e instanceof ProjectError) return notFound(res, p.viewer, 'No such file in this project');
+      throw e;
+    }
+    sendRaw(res, wild(req), data, req.query.download === '1');
+  });
+}
+
+// What a raw file may be shown as. Images and PDFs display in the browser;
+// everything else is plain text or a download, never a page of ours: the
+// bytes are whatever someone uploaded, so they are sandboxed, as mochi
+// sandboxes a repository's raw files.
+const INLINE_TYPES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  pdf: 'application/pdf',
+};
+
+export function sendRaw(res: Response, rel: string, data: Buffer, download: boolean): void {
+  const ext = (rel.split('.').pop() ?? '').toLowerCase();
+  const base = rel.split('/').pop() ?? 'file';
+  const inline = !download && INLINE_TYPES[ext] !== undefined;
+  const type = INLINE_TYPES[ext] ?? (isEditableTextBuffer(data) ? 'text/plain; charset=utf-8' : 'application/octet-stream');
+  res
+    .status(200)
+    .set('Content-Type', type)
+    .set('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+    .set('Content-Disposition', `${inline || (!download && type.startsWith('text/')) ? 'inline' : 'attachment'}; filename="${base.replace(/["\\\r\n]/g, '_')}"`)
+    .set('Cache-Control', 'private, no-cache')
+    .send(data);
+}
+
+function isEditableTextBuffer(data: Buffer): boolean {
+  const sample = data.subarray(0, 8192);
+  if (sample.includes(0)) return false;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(data.length > sample.length ? sample.subarray(0, sample.length - 4) : sample);
+    return true;
+  } catch {
+    return false;
+  }
 }

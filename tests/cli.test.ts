@@ -143,3 +143,26 @@ test('the site admin’s pages are mochi’s, with the sections a shelf has', as
     await srv.stop();
   }
 });
+
+test('file get, put, mv, and rm from the command line', async () => {
+  const srv = await serve();
+  const bob = EXAMPLE_TOKENS.bob;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-files-'));
+  try {
+    const local = path.join(tmp, 'fig.png');
+    fs.writeFileSync(local, Buffer.from('89504e470d0a1a0a0001', 'hex'));
+    const put = await json(srv.base, bob, ['file', 'put', 'alice/paper', local, '--as', 'figures/fig.png']);
+    assert.deepEqual(put, { path: 'figures/fig.png', size: 10 });
+    assert.notEqual((await cli(srv.base, bob, ['file', 'put', 'alice/paper', local, '--as', 'figures/fig.png'])).code, 0, 'exists without --overwrite');
+    await json(srv.base, bob, ['file', 'mv', 'alice/paper', 'figures/fig.png', 'figures/renamed.png']);
+    const got = path.join(tmp, 'back.png');
+    const r = await cli(srv.base, bob, ['file', 'get', 'alice/paper', 'figures/renamed.png', '-o', got]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(fs.readFileSync(got), fs.readFileSync(local));
+    await json(srv.base, bob, ['file', 'rm', 'alice/paper', 'figures/renamed.png']);
+    assert.notEqual((await cli(srv.base, EXAMPLE_TOKENS.carol, ['file', 'rm', 'alice/paper', 'main.tex'])).code, 0, 'carol only reads');
+    assert.ok(fs.existsSync(path.join(srv.root, 'collections/alice/projects/paper/files/main.tex')));
+  } finally {
+    await srv.stop();
+  }
+});
