@@ -1,0 +1,38 @@
+{
+  "name": "@magland/ohagi",
+  "version": "0.0.1",
+  "description": "A self-hosted LaTeX editor with the shape of Overleaf, where several people edit one file at once, from one small server with no database.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc && node scripts/build-client.mjs --minify",
+    "build:client": "node scripts/build-client.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p client",
+    "example": "bash scripts/create-example.sh example-root",
+    "dev": "node scripts/build-client.mjs && tsx src/index.ts serve example-root",
+    "test": "node scripts/build-client.mjs && node --import tsx --test tests/*.test.ts"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@codemirror/collab": "^6.1.1",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/legacy-modes": "^6.5.4",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  },
+  "bin": {
+    "ohagi": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
