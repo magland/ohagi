@@ -20,6 +20,7 @@ setNaming({
   configDirName: 'ohagi',
   displayName: 'ohagi',
   git: false,
+  invites: true,
   accessFile: 'access.json',
   itemNoun: 'project',
   itemNounPlural: 'projects',

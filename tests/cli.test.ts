@@ -270,3 +270,53 @@ test('git clone of a project: members only, read-only, and current', async () =>
     await srv.stop();
   }
 });
+
+test('minting a token gives an invite link, and the link signs the person in', async () => {
+  const srv = await serve();
+  try {
+    const added = await json(srv.base, EXAMPLE_TOKENS.dev, ['user', 'add', 'frank']);
+    const invite = String(added.invite);
+    const token = String(added.token);
+    assert.equal(invite, `${srv.base}/invite#user=frank&token=${token}`);
+    const text = await cli(srv.base, EXAMPLE_TOKENS.dev, ['user', 'add', 'frank']);
+    assert.match(text.stdout, /Invite link, which signs them in with one press of a button/);
+    assert.match(text.stdout, new RegExp(`${srv.base}/invite#user=frank&token=ohagi_`));
+
+    // The page the link opens: the fragment is the browser's, so the server
+    // sees only /invite, and serves the form the page script fills.
+    const page = await fetch(`${srv.base}/invite`);
+    assert.equal(page.status, 200);
+    assert.equal(page.headers.get('cache-control'), 'no-store');
+    const body = await page.text();
+    assert.match(body, /data-invite/);
+    assert.match(body, /Join the shelf/);
+    // Pressing the button is a sign-in with what the link carried.
+    const signIn = await fetch(`${srv.base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'frank', token, next: '/' }).toString(),
+    });
+    assert.equal(signIn.status, 302);
+    assert.match(signIn.headers.get('set-cookie') ?? '', /^ohagi_session=/);
+
+    // The admin's token page shows the link too.
+    const dev = await fetch(`${srv.base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'dev', token: EXAMPLE_TOKENS.dev, next: '/' }).toString(),
+    });
+    const cookie = (dev.headers.get('set-cookie') ?? '').split(';')[0];
+    const users = await (await fetch(`${srv.base}/admin/users`, { headers: { Cookie: cookie } })).text();
+    const csrf = /name="csrf" value="([^"]+)"/.exec(users)![1];
+    const minted = await fetch(`${srv.base}/admin/users/frank/token`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf }).toString(),
+    });
+    assert.match(await minted.text(), new RegExp(`${srv.base.replace(/[/.]/g, '\\$&')}/invite#user=frank&amp;token=ohagi_`));
+  } finally {
+    await srv.stop();
+  }
+});
