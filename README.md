@@ -4,7 +4,7 @@ A self-hosted LaTeX editor with the shape of Overleaf, where several people edit
 
 ohagi is built from the same parts as [Mochi Forge](https://github.com/magland/mochiforge), its sibling (checked out in the next directory for development), as [dango](https://github.com/magland/dango) is. Where mochi has a *vault* of repositories, ohagi has a *shelf* of projects, grouped into collections in the same way, and the two look and behave alike: the same page layout, themes, sign-in, account pages, tokens, permissions, and command line.
 
-This is early. Collaborative editing, sign-in, members-only projects, project settings, user administration, and the command line work; compiling, the file tree, and git come next.
+This is early. Collaborative editing, compiling to PDF, files, sign-in, members-only projects, project settings, user administration, and the command line work; git, backup, and deploying come next.
 
 ## Try it
 
@@ -21,12 +21,14 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 ## What it does
 
 - **Collaborative editing** of every text file in a project, `.tex`, `.bib`, `.sty`, and the rest, in CodeMirror 6, with each person's cursor and name shown to the others.
+- **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter.
+- **Files:** create, upload, rename or move, and delete, with anyone who has the file open following it; figures and other binary files are uploaded and served as they are.
 - **Projects in collections,** addressed as `/<collection>/<project>`, with mochi's naming rules.
 - **Members only.** A project is private: its collaborators, its collection's owners, and site admins see it, and nobody else learns it exists. Roles are mochi's: `read` opens the editor read-only, `write` edits, `admin` manages. A user owns the collection named after them.
 - **Sign-in and accounts** are mochi's own pages: tokens, passkeys, codes carried from another browser, and GitHub sign-in, with the same sliding sessions and CSRF checks.
 - **Project settings** in the shape of a repository's: the description, public or private, collaborators and their roles, and deletion.
 - **Administration** by mochi's own pages: users, their tokens and passkeys, the site-admin bit, sign-in with GitHub, and the theme.
-- **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `user`, `api`, and `reset-token`. The `user` commands are mochi's own, against the same routes.
+- **A command line** on mochi's framework: `ohagi serve`, `login`, `whoami`, `collection`, `project`, `collab`, `file`, `compile`, `user`, `api`, and `reset-token`. The `user` commands are mochi's own, against the same routes.
 
 ## How editing works
 
@@ -37,6 +39,16 @@ Only the page rebases. We first let the server rebase stale pushes itself (colla
 Remote cursors travel separately and are held in memory only. A page sends its selection in the text at its synced version, and the server carries it forward over later changes before passing it on. The name shown is the signed-in user's, set by the server.
 
 The sync API takes either of mochi's credentials: the browser's session cookie, with the session's CSRF value on every write, or a bearer token.
+
+## How compiling works
+
+A compile copies the project's files into `build/src/` beside `files/` (bringing an existing copy up to date, so latexmk can reuse its auxiliary files) and runs latexmk there. A document is untrusted input, so it is held in three ways:
+
+- **TeX's own settings:** no shell escape, and `openin_any` and `openout_any` set to paranoid, so a document cannot read or write by an absolute path or one that climbs out of the directory. TeX Live's default lets a document `\input` any file the server can read.
+- **A bubblewrap namespace,** where the machine allows one: the system read-only, only the parts of `/etc` TeX needs, no network, and the build directory the only writable place. The shelf is not in it at all. lualatex's Lua can open files without asking TeX, so lualatex relies on the namespace and is refused on a machine without it.
+- **Limits:** a timeout that kills the whole compile, and caps on memory and CPU time.
+
+One detail is worth recording. latexmk is run without an output directory, because TeX also looks for input files inside an output directory, by a joined path that `openin_any` does not check: in our tests `../../../shelf.json` read through `build/out/` escaped the paranoid setting. The tests try that and the other ways out, with and without the namespace.
 
 ## The shelf
 
@@ -57,6 +69,7 @@ The sync API takes either of mochi's credentials: the browser's session cookie, 
           collab/
             main.tex.json     epoch, version, and hash of the text as last written
             main.tex.log      one line per accepted change
+          build/              the last compile: src/ (a copy of files/ with latexmk's output) and result.json
 ```
 
 A file stays a plain file, written a moment after typing stops. Each accepted change is appended to the log before it is acknowledged, so after a crash loading replays whatever the file missed. The log also keeps recent history, so a page left open across a restart catches up from its own version rather than starting over. If the file on disk is not the text its metadata describes (it was edited with another tool while the server was stopped), a new *epoch* starts and open pages are sent the whole text.
@@ -71,7 +84,7 @@ The trade-off is dango's: ohagi does not build without the sibling checkout pres
 
 ```bash
 npm run typecheck
-npm test          # scripted pages typing into one file at once, through a restart; permissions; creating
+npm test          # concurrent editing through a restart, permissions, files, the CLI, and compiling (sandbox escapes included)
 ```
 
 The tests drive `client/sync.ts`, the same module the browser runs, from Node, and sign in through mochi's real `/login` form. The editor bundle (`dist/static/editor.js`, about 110 KB gzipped) is the one build step the pages have.
