@@ -10,7 +10,7 @@
 # manifests through, whatever else the parent directory holds. `ohagi deploy
 # fly --from-source` assembles the same trees in a temporary directory and
 # builds this file from there.
-FROM node:24-bookworm-slim AS build
+FROM node:24-trixie-slim AS build
 WORKDIR /build/ohagi
 COPY ohagi/package.json ohagi/package-lock.json ./
 RUN npm ci
@@ -29,7 +29,7 @@ RUN npm run build && npm prune --omit=dev
 # when the machine allows unprivileged user namespaces, and the server says
 # at startup when it does not). The TeX documentation is left out, which is
 # most of TeX Live's size and nothing a compile reads.
-FROM node:24-bookworm-slim
+FROM node:24-trixie-slim
 RUN printf 'path-exclude=/usr/share/doc/*\npath-include=/usr/share/doc/*/copyright\npath-exclude=/usr/share/texlive/texmf-dist/doc/*\npath-exclude=/usr/share/texmf/doc/*\npath-exclude=/usr/share/man/*\n' > /etc/dpkg/dpkg.cfg.d/01-nodoc \
  && apt-get update \
  && apt-get install -y --no-install-recommends texlive-full latexmk git bubblewrap ca-certificates \

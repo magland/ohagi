@@ -129,7 +129,7 @@ export function mainFile(ref: ProjectRef): string | null {
 }
 
 /** Whether bubblewrap can make the namespace this machine would compile in. */
-function bubblewrapWorks(): boolean {
+export function bubblewrapWorks(): boolean {
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-bwrap-'));
   try {
     fs.mkdirSync(path.join(probe, 'src'));

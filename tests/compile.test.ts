@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { Compiler, parseLog } from '../src/compile';
+import { Compiler, bubblewrapWorks, parseLog } from '../src/compile';
 import { createProject, filesDir } from '../src/projects';
 
 // Compiling, against the TeX Live on this machine: a document compiles, its
@@ -42,8 +42,14 @@ function pdfText(file: string): string {
   }
 }
 
+// bubblewrap needs unprivileged user namespaces, which some machines (CI
+// runners among them) do not allow; its tests are skipped there, and the
+// same checks run without it.
+const hasBwrap = hasTeX && bubblewrapWorks();
+
 for (const sandbox of ['bubblewrap', 'none'] as const) {
-  test(`a document compiles, and its errors are found (sandbox: ${sandbox})`, { skip: !hasTeX }, async () => {
+  const skip = !hasTeX || (sandbox === 'bubblewrap' && !hasBwrap);
+  test(`a document compiles, and its errors are found (sandbox: ${sandbox})`, { skip }, async () => {
     const c = new Compiler({ sandbox });
     const { ref } = shelfWith({ 'main.tex': doc('Hello from \\input{chapters/one}.'), 'chapters/one.tex': 'chapter one' });
     const ok = await c.compile(ref);
@@ -69,7 +75,7 @@ for (const sandbox of ['bubblewrap', 'none'] as const) {
     assert.ok(bad.pdf, 'a PDF is produced despite the error');
   });
 
-  test(`a document cannot read the shelf, the system, or run a command (sandbox: ${sandbox})`, { skip: !hasTeX }, async () => {
+  test(`a document cannot read the shelf, the system, or run a command (sandbox: ${sandbox})`, { skip }, async () => {
     const c = new Compiler({ sandbox });
     const { ref } = shelfWith((root) => ({
       'main.tex': doc(
@@ -95,7 +101,7 @@ for (const sandbox of ['bubblewrap', 'none'] as const) {
   });
 }
 
-test('lualatex cannot open files outside the project from Lua, inside the sandbox', { skip: !hasTeX }, async () => {
+test('lualatex cannot open files outside the project from Lua, inside the sandbox', { skip: !hasBwrap }, async () => {
   const c = new Compiler({ sandbox: 'bubblewrap' });
   if (c.sandbox !== 'bubblewrap') return;
   const { ref } = shelfWith((root) => ({

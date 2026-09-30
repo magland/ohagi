@@ -1,0 +1,236 @@
+# Publishes the container image that `ohagi deploy fly` deploys.
+#
+# The same arrangement as mochiforge's and dango's image workflows. A version tag is tagged
+# with that version and moves `latest`; a successful ci run on main is tagged
+# `main` and nothing else. So the tags follow the released versions, and
+# `deploy` can pin to the CLI's own version and expect to find it. Nothing is
+# pushed until the tests have passed: for main that means waiting on ci and
+# building the commit ci tested; a version tag is gated on being pushed only
+# after a release passed.
+#
+# The build context is the runner's workspace, holding both checkouts, since the
+# image compiles mochiforge's sources in (see the Dockerfile).
+#
+# The image carries a full TeX Live and is several gigabytes, so the runner's
+# preinstalled toolchains are cleared first to make room, and the build is
+# given longer than dango's.
+#
+# One thing this workflow cannot do for you: a newly created GitHub package is
+# private, and Fly pulls anonymously. After the first successful run, set the
+# package to public under Packages > ohagi > Package settings, or deploys will
+# fail to pull the image.
+name: image
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # A workflow_run's branch filter matches the head branch by name, and a
+    # pull request from a fork can name its branch main; ci runs on pull
+    # requests, so without the last two conditions a fork's commit would be
+    # built, pushed, and deployed here with this repository's credentials.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
+    permissions:
+      contents: read
+      packages: write
+    # The one tag the deploy job below pulls, so that what reaches a shelf
+    # is the image this run built rather than whatever `main` or `latest`
+    # points at by the time the deploy starts.
+    outputs:
+      image: ${{ steps.tags.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          path: ohagi
+
+      - uses: actions/checkout@v4
+        with:
+          repository: magland/mochiforge
+          ref: main
+          path: mochiforge
+
+      # Room for a TeX Live image: the runner's preinstalled SDKs are several
+      # gigabytes nobody here uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af > /dev/null
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the tags
+        id: tags
+        run: |
+          image=ghcr.io/${{ github.repository_owner }}/ohagi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            echo "tags=$image:$version,$image:latest" >> "$GITHUB_OUTPUT"
+            echo "ref=$image:$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$image:main" >> "$GITHUB_OUTPUT"
+            echo "ref=$image:main" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The version in package.json is what the CLI asks the registry for, so
+      # a tag that disagrees with it would publish an image no deploy requests.
+      - name: Check the tag against package.json
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(node -p "require('./ohagi/package.json').version")
+          [ "v$version" = "$GITHUB_REF_NAME" ] || {
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          }
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ohagi/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # An image that cannot serve a shelf is worse than no image, and this is
+      # the last point where that is cheap to find out.
+      - name: Run the image and check it serves a fresh shelf
+        run: |
+          docker run -d --name check -p 3000:3000 "${{ steps.tags.outputs.ref }}"
+          for _ in $(seq 1 60); do
+            curl -fsS -o /dev/null http://127.0.0.1:3000/login && break
+            sleep 1
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)
+          docker logs check
+          docker rm -f check >/dev/null
+          [ "$code" = "200" ] || { echo "the image did not answer 200"; exit 1; }
+
+      # The path `ohagi deploy` relies on: the server adopts an owner token
+      # supplied in the environment, and never writes it to its log.
+      - name: Check the owner token can be supplied to the image
+        run: |
+          token="ohagi_$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          docker run -d --name preset -p 3001:3000 -e "OHAGI_OWNER_TOKEN=$token" "${{ steps.tags.outputs.ref }}"
+          for _ in $(seq 1 60); do
+            curl -fsS -o /dev/null http://127.0.0.1:3001/login && break
+            sleep 1
+          done
+          who=$(curl -s -H "authorization: Bearer $token" http://127.0.0.1:3001/api/whoami)
+          logs=$(docker logs preset 2>&1)
+          docker rm -f preset >/dev/null
+          echo "$logs"
+          echo "$who" | grep -q '"username":"owner"' || {
+            echo "the supplied owner token was not adopted: $who"
+            exit 1
+          }
+          if echo "$logs" | grep -q "$token"; then
+            echo "the server echoed the supplied owner token into its log"
+            exit 1
+          fi
+
+  # The shelves that follow the published image, redeployed as soon as one is
+  # built, the way mochiforge's image workflow redeploys vault1. Each app is
+  # one entry in this list; adding a shelf is adding a line, and the matrix
+  # keeps one failing app from stopping the others.
+  #
+  # Deploying the exact tag this run built, rather than letting the CLI pick
+  # its own version, is what makes a main build reach a shelf at all: on
+  # main the image is tagged `main`, and no released version answers to it.
+  #
+  # This runs only for images built from this repository's own commits, and
+  # not for a build dispatched by hand, which is for publishing an image
+  # without moving the shelves that follow main.
+  #
+  # Every deploy is a restart, so open editors drop their event streams for a
+  # few seconds and reconnect, and carry on from the version they hold.
+  deploy:
+    needs: image
+    if: >-
+      github.repository == 'magland/ohagi' &&
+      github.event_name != 'workflow_dispatch' && (
+        github.event_name != 'workflow_run' || (
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # shelf1.fly.dev, redeployed in place. Needs nothing but a Fly
+          # credential scoped to the app.
+          - app: shelf1
+            token: FLY_API_TOKEN_SHELF1
+    steps:
+      # The CLI that drives the deploy is this commit's, so it stays in step
+      # with the image it is deploying, and it is built against the same
+      # mochiforge the image was.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          path: ohagi
+
+      - uses: actions/checkout@v4
+        with:
+          repository: magland/mochiforge
+          ref: main
+          path: mochiforge
+
+      # Pinned to a commit rather than to master, as mochiforge pins it: this
+      # step runs in the job that holds the Fly credential.
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ohagi/package-lock.json
+
+      - run: npm ci
+        working-directory: ohagi
+
+      # The shared modules' packages, where their sources look for them; see ci.yml.
+      - run: ln -s ohagi/node_modules node_modules
+
+      - run: npm run build
+        working-directory: ohagi
+
+      # A shelf whose app already has a machine mints no owner token and
+      # prints nothing secret, so there is nothing here for a log to leak. The
+      # region, the volume size, and the machine's shape are read back off the
+      # live app, which is why no flag describing them appears.
+      - name: Deploy ${{ matrix.app }}
+        working-directory: ohagi
+        run: node dist/ohagi/src/index.js deploy fly ${{ matrix.app }} --image "$IMAGE"
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          FLY_API_TOKEN: ${{ secrets[matrix.token] }}
