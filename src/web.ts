@@ -17,6 +17,7 @@ import {
   setRepoPrivate,
 } from '../../mochiforge/src/perms';
 import { userExists } from '../../mochiforge/src/vault';
+import { isValidName } from '../../mochiforge/src/scan';
 import { Viewer, getViewer } from '../../mochiforge/src/session';
 import { field, requireViewerPage, requireViewerPost, urlencodedForm } from '../../mochiforge/src/web';
 import { Docs } from './docs';
@@ -42,6 +43,7 @@ import {
   MAX_FILE_BYTES,
   deleteCollection,
   deleteProject,
+  renameProject,
   fileExists,
   filesDir,
   readFile,
@@ -420,6 +422,41 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
     removeCollaborator(p.ref.dir, username);
     res.redirect(303, settingsUrl(p.ref, `Removed ${username}.`));
   });
+
+  app.post('/:collection/:project/settings/rename', form, (req, res, next) => void renameRoute(req, res).catch(next));
+
+  async function renameRoute(req: Request, res: Response): Promise<void> {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const collection = field(req, 'collection').trim();
+    const name = field(req, 'name').trim();
+    // Moving into another collection is creating there, so it takes what
+    // creating there takes, as moving a repository does in a vault.
+    const allowed =
+      collection === p.ref.collection ||
+      (collectionExists(root, collection) ? canCreateRepo(root, p.viewer.auth, collection, name) : canCreateCollection(root, p.viewer.auth, collection));
+    if (!allowed) {
+      renderSettings(res, p, { error: `You may not create projects in ${collection}.`, status: 403 });
+      return;
+    }
+    try {
+      if (!isValidName(collection) || !isValidName(name)) throw new ProjectError('That name is not allowed.');
+      if (findProject(root, collection, name) && !(collection === p.ref.collection && name === p.ref.name)) {
+        throw new ProjectError(`Project ${collection}/${name} already exists.`, 'exists');
+      }
+      const dest = { collection, name };
+      // What was edited is committed under the old name, with its authors,
+      // before the directory moves.
+      await history.commitNow(p.ref);
+      history.forget(p.ref.dir);
+      docs.moveProject(p.ref.dir, (rel) => views.fileUrl(dest, rel));
+      const moved = renameProject(root, p.ref, collection, name);
+      res.redirect(303, `${views.projectUrl(moved)}/settings?msg=${encodeURIComponent(`Renamed to ${moved.collection}/${moved.name}.`)}`);
+    } catch (e) {
+      if (!(e instanceof ProjectError)) throw e;
+      renderSettings(res, p, { error: e.message, status: e.code === 'exists' ? 409 : 400 });
+    }
+  }
 
   app.post('/:collection/:project/settings/delete', form, (req, res) => {
     const p = loadProjectAs(req, res, 'admin', true);

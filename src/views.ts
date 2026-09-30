@@ -424,6 +424,19 @@ ${csrfField(viewer)}
 <p class="muted small">read may open the project and follow along; write may also edit its files; admin may also change its settings and who is on it.</p>
 </div></div>`
     : '';
+  const rename = view.canAdmin
+    ? html`<div class="danger-zone caution">
+<h3>Rename or move</h3>
+<p>Everything moves with the project: its files, its history, and who is on it. Anyone with one of its files open follows it to the new address. Old links stop working.</p>
+<form method="post" action="${base}/settings/rename" class="inline-form">
+${csrfField(viewer)}
+<label for="toCollection">Collection</label><input type="text" id="toCollection" name="collection" value="${ref.collection}" required>
+<label for="toName">Name</label><input type="text" id="toName" name="name" value="${ref.name}" required>
+<button type="submit" class="btn">${icon('pencil')}<span>Rename</span></button>
+</form>
+<p class="muted small">The collection may be one you own, or the one named after you, which is created along with the move.</p>
+</div>`
+    : '';
   const danger = view.canAdmin
     ? html`<div class="danger-zone">
 <h3>Danger zone</h3>
@@ -442,6 +455,7 @@ ${flash(view.msg)}
 ${formError(view.error)}
 ${general}
 ${access}
+${rename}
 ${danger}`;
   return page(`Settings - ${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: `${base}/settings` });
 }

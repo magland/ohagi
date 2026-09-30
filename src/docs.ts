@@ -74,9 +74,23 @@ export class Docs {
   dropProject(dir: string): void {
     for (const [key, doc] of this.open) {
       if (key.startsWith(`${dir}\0`)) {
-        doc.close();
+        doc.close({ type: 'closed', reason: 'deleted' });
         this.open.delete(key);
       }
+    }
+  }
+
+  /**
+   * A project is moving: write each open document, and send its pages to the
+   * address the file will have, which `to` gives for a path.
+   */
+  moveProject(dir: string, to: (rel: string) => string): void {
+    for (const [key, doc] of this.open) {
+      if (!key.startsWith(`${dir}\0`)) continue;
+      const rel = key.slice(dir.length + 1);
+      doc.flush();
+      doc.close({ type: 'closed', reason: 'moved', to: to(rel) });
+      this.open.delete(key);
     }
   }
 

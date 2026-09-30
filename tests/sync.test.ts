@@ -597,3 +597,45 @@ test('files: create, upload over an open file, rename and delete under an open e
     await srv.stop();
   }
 });
+
+test('renaming a project moves everything, and sends its editors after it', async () => {
+  const root = makeShelf();
+  const srv = await serve(root);
+  const open: Page[] = [];
+  try {
+    const alice = await signIn(srv.base, 'alice');
+    const csrf = /name="csrf" value="([^"]+)"/.exec((await getPage(srv.base, '/alice/paper/settings', alice)).body)![1];
+    const page = await Page.open(srv.base, 'bob');
+    open.push(page);
+    await sleep(200);
+    page.randomEdit(seeded(5));
+    await settled([page], srv);
+    const rename = (fields: Record<string, string>) =>
+      fetch(`${srv.base}/alice/paper/settings/rename`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { Cookie: alice, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ csrf, ...fields }).toString(),
+      });
+    // Not into someone else's collection.
+    assert.equal((await rename({ collection: 'lab', name: 'paper' })).status, 403);
+    const moved = await rename({ collection: 'alice', name: 'thesis' });
+    assert.equal(moved.status, 303);
+    assert.match(moved.headers.get('location') ?? '', /^\/alice\/thesis\/settings/);
+    const deadline = Date.now() + 5000;
+    while (!page.closedWith && Date.now() < deadline) await sleep(20);
+    assert.deepEqual(page.closedWith, { reason: 'moved', to: '/alice/thesis/edit/main.tex' });
+    assert.ok(!fs.existsSync(path.join(root, PAPER)));
+    const dir = path.join(root, 'collections/alice/projects/thesis');
+    assert.equal(fs.readFileSync(path.join(dir, 'files/main.tex'), 'utf8'), page.state.doc.toString());
+    // Access came along: bob still writes it, carol still reads it.
+    const bob = await signIn(srv.base, 'bob');
+    assert.match((await getPage(srv.base, '/alice/thesis/edit/main.tex', bob)).body, /data-writable="1"/);
+    // bob's edit was committed under his name before the move.
+    const { execFileSync } = await import('child_process');
+    assert.match(execFileSync('git', ['--git-dir', path.join(dir, 'repo.git'), 'log', '-1', '--format=%an'], { encoding: 'utf8' }), /^bob/);
+  } finally {
+    for (const p of open) p.sync.close();
+    await srv.stop();
+  }
+});

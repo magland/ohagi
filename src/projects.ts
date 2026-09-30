@@ -432,3 +432,20 @@ export function removeFile(ref: ProjectRef, rel: string): string {
   pruneEmpty(collabDir(ref.dir), clean);
   return clean;
 }
+
+/**
+ * Move a project to a new name, in the same collection or another, which is
+ * created on the way when the caller may create it. Everything moves with the
+ * directory: files, history, access, and the last build. The caller has
+ * written and closed the project's open editors first.
+ */
+export function renameProject(root: string, ref: ProjectRef, collection: string, name: string): ProjectRef {
+  if (!isValidUserName(collection)) throw new ProjectError('That collection name is not allowed.');
+  if (!isValidUserName(name)) throw new ProjectError('A project name may use letters, digits, dot, underscore, and dash, and must not be a reserved word.');
+  const dir = projectDir(root, collection, name);
+  if (dir === ref.dir) return ref;
+  if (fs.existsSync(dir)) throw new ProjectError(`Project ${collection}/${name} already exists.`, 'exists');
+  fs.mkdirSync(projectsDir(root, collection), { recursive: true });
+  fs.renameSync(ref.dir, dir);
+  return { collection, name, dir };
+}
