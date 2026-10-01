@@ -53,6 +53,7 @@ import {
   setProjectMeta,
 } from './projects';
 import * as views from './views';
+import { patterns as recordingPatterns, setPatterns as setRecordingPatterns } from './recording';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -62,7 +63,15 @@ import * as fs from 'fs';
 
 const form = urlencodedForm('64kb');
 
-export function registerWeb(app: Express, root: string, docs: Docs, history: History, editorTag: string, workerTag: string): void {
+export function registerWeb(
+  app: Express,
+  root: string,
+  docs: Docs,
+  history: History,
+  editorTag: string,
+  workerTag: string,
+  viewerTags: { js: string; css: string },
+): void {
   const notFound = (res: Response, viewer: Viewer | null, message = 'Not found') =>
     res.status(404).type('html').send(views.errorPage(404, message, { viewer }));
 
@@ -308,6 +317,8 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
           files: listFiles(p.ref),
           isPrivate: projectIsPrivate(p.ref),
           canWrite: p.writable,
+          canAdmin: atLeast(p.role, 'admin'),
+          recording: recordingPatterns(p.ref),
           members: members(p.ref),
           msg,
         },
@@ -361,6 +372,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
               .map(([username, role]) => ({ username, role }))
               .sort((a, b) => a.username.localeCompare(b.username)),
             owners: collectionOwners(root, p.ref.collection),
+            recording: recordingPatterns(p.ref),
             msg: opts.msg,
             error: opts.error,
           },
@@ -389,6 +401,36 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
     else delete meta.engine;
     setProjectMeta(p.ref, meta);
     res.redirect(303, settingsUrl(p.ref, 'Saved.'));
+  });
+
+  // Recording how the project is written, with arewehuman (see
+  // src/recording.ts): setting it up, or changing which files are recorded.
+  app.post('/:collection/:project/settings/arewehuman', form, (req, res) => {
+    const p = loadProjectAs(req, res, 'admin', true);
+    if (!p) return;
+    const list = [
+      ...new Set(
+        field(req, 'patterns')
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter((s) => s && !s.startsWith('/') && !s.split('/').includes('..') && s.length <= 200)
+      ),
+    ];
+    const first = recordingPatterns(p.ref) === null;
+    setRecordingPatterns(p.ref, list);
+    docs.refreshRecordings(p.ref);
+    history.touched(p.ref, p.viewer.auth.username);
+    res.redirect(
+      303,
+      settingsUrl(
+        p.ref,
+        first
+          ? 'Recording is set up. Matching files are recorded from their next edit.'
+          : list.length
+          ? `Recording ${list.join(', ')}.`
+          : 'No more files will start being recorded. Files that already have a recording go on being recorded.'
+      ) + '#arewehuman'
+    );
   });
 
   app.post('/:collection/:project/settings/visibility', form, (req, res) => {
@@ -450,7 +492,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
       // before the directory moves.
       await history.commitNow(p.ref);
       history.forget(p.ref.dir);
-      docs.moveProject(p.ref.dir, (rel) => views.fileUrl(dest, rel));
+      await docs.moveProject(p.ref.dir, (rel) => views.fileUrl(dest, rel));
       const moved = renameProject(root, p.ref, collection, name);
       res.redirect(303, `${views.projectUrl(moved)}/settings?msg=${encodeURIComponent(`Renamed to ${moved.collection}/${moved.name}.`)}`);
     } catch (e) {
@@ -544,7 +586,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
         const rel = dir ? `${dir}/${base}` : base;
         const clean = writeFile(p.ref, rel, f.data, { overwrite: true });
         // Someone editing the file takes its new text.
-        docs.peek(p.ref, clean)?.reloadFromDisk();
+        docs.peek(p.ref, clean)?.reloadFromDisk(p.viewer.auth.username);
         history.touched(p.ref, p.viewer.auth.username);
         written.push(clean);
       }
@@ -556,6 +598,24 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
     res.redirect(303, projectPath(p.ref, `Uploaded ${written.join(', ')}.`));
   });
 
+  // Who wrote what in a recorded file, and its replay: arewehuman's viewer, in
+  // a frame of its own (see client/viewer.tsx).
+  app.get('/:collection/:project/record/*', (req, res) => {
+    const p = loadProject(req, res);
+    if (!p) return;
+    const rel = cleanPath(wild(req));
+    if (!rel || !fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
+    res.type('html').send(views.recordPage(p.ref, p.viewer, rel, projectIsPrivate(p.ref)));
+  });
+
+  app.get('/:collection/:project/record-frame/*', (req, res) => {
+    const p = loadProject(req, res);
+    if (!p) return;
+    const rel = cleanPath(wild(req));
+    if (!rel || !fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
+    res.type('html').send(views.recordFrame(p.ref, rel, viewerTags));
+  });
+
   app.get('/:collection/:project/rename/*', (req, res) => {
     const p = loadProjectAs(req, res, 'write');
     if (!p) return;
@@ -563,7 +623,7 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
     res.type('html').send(views.renameFilePage(p.ref, p.viewer, wild(req), {}));
   });
 
-  app.post('/:collection/:project/rename/*', form, (req, res) => {
+  app.post('/:collection/:project/rename/*', form, async (req, res, next) => {
     const p = loadProjectAs(req, res, 'write', true);
     if (!p) return;
     const from = wild(req);
@@ -575,12 +635,12 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
       if (dest !== from && fileExists(p.ref, dest)) throw new ProjectError(`${dest} already exists.`, 'exists');
       // Anyone editing it is sent after it; the text is written first, so it
       // and its history move with the file.
-      docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: views.fileUrl(p.ref, dest) });
+      await docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: views.fileUrl(p.ref, dest) });
       const moved = renameFile(p.ref, from, dest);
       history.touched(p.ref, p.viewer.auth.username);
       res.redirect(303, projectPath(p.ref, `Renamed ${moved.from} to ${moved.to}.`));
     } catch (e) {
-      if (!(e instanceof ProjectError)) throw e;
+      if (!(e instanceof ProjectError)) return next(e);
       res.status(e.code === 'missing' ? 404 : e.code === 'exists' ? 409 : 400).type('html').send(views.renameFilePage(p.ref, p.viewer, from, { to }, e.message));
     }
   });
@@ -592,15 +652,19 @@ export function registerWeb(app: Express, root: string, docs: Docs, history: His
     res.type('html').send(views.deleteFilePage(p.ref, p.viewer, wild(req)));
   });
 
-  app.post('/:collection/:project/delete/*', form, (req, res) => {
-    const p = loadProjectAs(req, res, 'write', true);
-    if (!p) return;
-    const rel = wild(req);
-    if (!fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
-    docs.closeFile(p.ref, rel, { type: 'closed', reason: 'deleted' });
-    const gone = removeFile(p.ref, rel);
-    history.touched(p.ref, p.viewer.auth.username);
-    res.redirect(303, projectPath(p.ref, `Deleted ${gone}.`));
+  app.post('/:collection/:project/delete/*', form, async (req, res, next) => {
+    try {
+      const p = loadProjectAs(req, res, 'write', true);
+      if (!p) return;
+      const rel = wild(req);
+      if (!fileExists(p.ref, rel)) return notFound(res, p.viewer, 'No such file in this project');
+      await docs.closeFile(p.ref, rel, { type: 'closed', reason: 'deleted' });
+      const gone = removeFile(p.ref, rel);
+      history.touched(p.ref, p.viewer.auth.username);
+      res.redirect(303, projectPath(p.ref, `Deleted ${gone}.`));
+    } catch (e) {
+      next(e);
+    }
   });
 
   app.get('/:collection/:project/raw/*', (req, res) => {

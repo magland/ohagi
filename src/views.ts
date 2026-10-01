@@ -1,5 +1,5 @@
 import { avatar } from '../../mochiforge/src/avatar';
-import { Html, html, joinHtml, raw } from '../../mochiforge/src/html';
+import { Html, esc as escHtml, html, joinHtml, raw } from '../../mochiforge/src/html';
 import { icon } from '../../mochiforge/src/icons';
 import { formatSize, timeTag } from '../../mochiforge/src/render';
 import { Viewer, viewerIsAdmin } from '../../mochiforge/src/session';
@@ -192,6 +192,9 @@ export interface ProjectView {
   canWrite: boolean;
   /** Who can open it besides site admins: the collection's owners and the collaborators, with roles. */
   members: { name: string; role: string }[];
+  canAdmin: boolean;
+  /** The files recorded with arewehuman, or null when the project does not record (see src/recording.ts). */
+  recording: string[] | null;
   msg?: string;
 }
 
@@ -257,6 +260,18 @@ export function projectPage(view: ProjectView, viewer: Viewer | null, baseUrl: s
   const description = view.meta.description
     ? html`<p class="side-desc">${view.meta.description}</p>`
     : html`<p class="side-desc muted">No description provided.</p>`;
+  const recordingBlock =
+    view.recording !== null
+      ? html`<div class="side-block"><h3>Writing record</h3><p class="small">This project records how its files are written, with <a href="https://github.com/magland/arewehuman">arewehuman</a>${
+          view.recording.length ? html`: <span class="mono">${view.recording.join(', ')}</span>` : ''
+        }. Open a file's <b>● Recording</b> badge to see who wrote what.${
+          view.canAdmin ? html` <a href="${projectUrl(ref)}/settings#arewehuman">Settings</a>` : ''
+        }</p></div>`
+      : view.canAdmin
+      ? html`<div class="side-block"><h3>Writing record</h3><p class="small muted">Record how this project is written, keystroke by keystroke, as evidence of who wrote it. <a href="${projectUrl(
+          ref
+        )}/settings#arewehuman">Set up recording</a></p></div>`
+      : '';
   const clone = html`<div class="side-block"><h3>Clone</h3>${copyRow(`git clone ${baseUrl}${projectUrl(ref)}`)}<p class="muted small">Read-only: edits are made here, and a pull brings them. git asks for your username and a token; <span class="mono">ohagi login</span> stores one for it.</p></div>`;
   const content = html`${projectTitle(ref, view.isPrivate)}
 ${projectTabs(ref, 'files', view.canWrite)}
@@ -269,6 +284,7 @@ ${flash(view.msg)}
 <aside class="repo-side">
 <div class="side-block"><h3>About</h3>${description}</div>
 <div class="side-block"><h3>Members</h3>${members}</div>
+${recordingBlock}
 ${clone}
 </aside>
 </div>`;
@@ -360,6 +376,8 @@ export interface SettingsView {
   canAdmin: boolean;
   collaborators: { username: string; role: string }[];
   owners: string[];
+  /** The files recorded with arewehuman, or null when the project does not record. */
+  recording: string[] | null;
   msg?: string;
   error?: string;
 }
@@ -424,6 +442,21 @@ ${csrfField(viewer)}
 <p class="muted small">read may open the project and follow along; write may also edit its files; admin may also change its settings and who is on it.</p>
 </div></div>`
     : '';
+  const recordingBox = view.canAdmin
+    ? html`<div class="box settings-box" id="arewehuman"><div class="box-header">${icon('pencil')}Writing record</div><div class="box-body">
+<p>${
+        view.recording === null
+          ? html`Record how this project is written, with <a href="https://github.com/magland/arewehuman">arewehuman</a>: every edit to the files you choose, with who made it and when, and whether it was typed, pasted, or came from elsewhere. Readers can then see who wrote what and watch it being written, as evidence of human authorship.`
+          : html`This project records how its files are written, with <a href="https://github.com/magland/arewehuman">arewehuman</a>. Open a recorded file's <b>● Recording</b> badge to see who wrote what.`
+      }</p>
+<p class="muted small">The values of deleted characters are never recorded: text that is written and then removed leaves its length, place, and line breaks in the record, not what it said. The recordings live in the project's <span class="mono">.arewehuman</span> directory, which is committed with it, so every member and anyone who clones the project can see them, keystroke timing included.</p>
+<form method="post" action="${base}/settings/arewehuman">
+${csrfField(viewer)}
+<div class="field"><label for="awhPatterns">Files to record</label><textarea id="awhPatterns" name="patterns" rows="3" class="mono">${(view.recording ?? ['*.tex', '*.md']).join('\n')}</textarea><p class="muted small">One pattern per line, relative to the project, such as <span class="mono">*.tex</span> or <span class="mono">chapters/**/*.tex</span>; a pattern without a slash matches the file name in any folder. A file is recorded from its first edit after it matches. Files that already have a recording go on being recorded.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>${view.recording === null ? 'Start recording' : 'Save'}</span></button>
+</form>
+</div></div>`
+    : '';
   const rename = view.canAdmin
     ? html`<div class="danger-zone caution">
 <h3>Rename or move</h3>
@@ -455,6 +488,7 @@ ${flash(view.msg)}
 ${formError(view.error)}
 ${general}
 ${access}
+${recordingBox}
 ${rename}
 ${danger}`;
   return page(`Settings - ${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: `${base}/settings` });
@@ -485,6 +519,7 @@ export function editorPage(view: EditorView, viewer: Viewer, editorTag: string, 
   const content = html`<div class="editor-head">
 ${projectTitle(ref, view.isPrivate)}
 <span class="editor-file mono">${view.path}</span>${readOnly}
+<a id="awh-badge" class="counter awh-badge" href="${projectUrl(ref)}/record/${encPath(view.path)}" title="This project records how this file is written, with arewehuman. See who wrote what." hidden>● Recording</a>
 <span id="peers" class="editor-peers"></span><span id="status" class="editor-status">Connecting</span>
 </div>
 <div class="editor-body">
@@ -518,6 +553,30 @@ ${projectTitle(ref, view.isPrivate)}
     bodyClass: 'ohagi-editor',
     head: html`\n<script src="/assets/editor.js?v=${editorTag}" defer></script>`,
   });
+}
+
+// ---- who wrote what (arewehuman) ----
+
+/** A recorded file's who-wrote-what page: ohagi's frame around arewehuman's viewer. */
+export function recordPage(ref: ProjectRef, viewer: Viewer, rel: string, isPrivate: boolean): string {
+  const content = html`<div class="editor-head">
+${projectTitle(ref, isPrivate)}
+<a class="editor-file mono" href="${fileUrl(ref, rel)}">${rel}</a>
+<span class="muted small">Who wrote what, recorded with <a href="https://github.com/magland/arewehuman">arewehuman</a></span>
+</div>
+<iframe class="awh-frame" title="Who wrote what in ${rel}" src="${projectUrl(ref)}/record-frame/${encPath(rel)}"></iframe>`;
+  return page(`Who wrote ${rel} · ${ref.collection}/${ref.name}`, content, { crumbs: crumbs(ref.collection, ref.name), viewer, path: `${projectUrl(ref)}/record/${encPath(rel)}` });
+}
+
+/** What the frame holds: arewehuman's viewer alone, with its own styles. */
+export function recordFrame(ref: ProjectRef, rel: string, tags: { js: string; css: string }): string {
+  const api = `/api/projects/${encodeURIComponent(ref.collection)}/${encodeURIComponent(ref.name)}/awh/record?path=${encodeURIComponent(rel)}`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escHtml(rel)}</title>
+<link rel="stylesheet" href="/assets/awh-viewer.css?v=${tags.css}">
+<script src="/assets/awh-viewer.js?v=${tags.js}" defer></script>
+</head><body><div id="root" data-api="${escHtml(api)}"></div></body></html>`;
 }
 
 // ---- forms ----

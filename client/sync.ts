@@ -51,6 +51,8 @@ export interface SyncHost {
   compiled?(result: CompiledSummary): void;
   /** The file went away: renamed, to the editor address given, or deleted. Syncing has stopped. */
   closed?(reason: 'moved' | 'deleted', to?: string): void;
+  /** How a change of this page came about, sent with it for the file's recording (see client/awh.ts). */
+  describe?(origin: Transaction): unknown;
 }
 
 export interface SyncOptions {
@@ -261,7 +263,11 @@ export class Sync {
           csrf: this.opts.csrf,
           epoch: this.epoch,
           version,
-          updates: updates.map((u) => ({ clientID: u.clientID, changes: u.changes.toJSON() })),
+          sentAt: Date.now(),
+          updates: updates.map((u) => {
+            const awh = this.host.describe?.(u.origin);
+            return { clientID: u.clientID, changes: u.changes.toJSON(), ...(awh ? { awh } : {}) };
+          }),
         }),
       });
       if (res.ok) {
@@ -285,6 +291,32 @@ export class Sync {
       this.awaitVersion = 0;
     }
     this.schedulePush();
+  }
+
+  /**
+   * Tell the server which characters a copy took, for the file's recording:
+   * the ranges, in the text as the page holds it, are carried back over the
+   * page's unsent changes to its synced version, which the server can follow
+   * to its own.
+   */
+  registerCopy(nonce: string, ranges: { from: number; to: number }[]): void {
+    const st = this.host.state();
+    const unsent = sendableUpdates(st);
+    const back = (pos: number, assoc: number) => {
+      for (let i = unsent.length - 1; i >= 0; i--) pos = unsent[i].changes.invertedDesc.mapPos(pos, assoc);
+      return pos;
+    };
+    void fetch(this.url('awh/copy'), {
+      method: 'POST',
+      headers: { ...this.opts.headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        csrf: this.opts.csrf,
+        epoch: this.epoch,
+        version: getSyncedVersion(st),
+        nonce,
+        ranges: ranges.map((r) => [back(r.from, 1), back(r.to, -1)]),
+      }),
+    }).catch(() => undefined);
   }
 
   private async sendPresence(): Promise<void> {

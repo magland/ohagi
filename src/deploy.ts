@@ -53,12 +53,14 @@ export function ownVersion(): string {
  */
 const OHAGI_FILES = ['package.json', 'package-lock.json', 'tsconfig.json', 'src', 'client', 'scripts/build-client.mjs'];
 const MOCHIFORGE_FILES = ['src'];
+/** arewehuman's sources, for recording how projects are written (src/recording.ts). */
+const AREWEHUMAN_FILES = ['src'];
 
 /**
  * A build context for --from-source, assembled in a temporary directory.
  *
- * ohagi compiles mochiforge's sources in with its own, so a build needs both
- * checkouts, side by side, as they sit on disk. Handing Fly the parent
+ * ohagi compiles mochiforge's and arewehuman's sources in with its own, so a
+ * build needs all three checkouts, side by side, as they sit on disk. Handing Fly the parent
  * directory would upload whatever else lives there, since how flyctl filters a
  * context is not something to rely on, so the context is copied instead: the
  * two source trees, the manifests, and the Dockerfile at its root, a few
@@ -67,6 +69,7 @@ const MOCHIFORGE_FILES = ['src'];
 export function stageBuildContext(): { dir: string; cleanup(): void } {
   const root = packageRoot();
   const sibling = root ? path.resolve(root, '..', 'mochiforge') : null;
+  const awh = root ? path.resolve(root, '..', 'arewehuman') : null;
   if (!root || !fs.existsSync(path.join(root, 'Dockerfile')) || !fs.existsSync(path.join(root, 'src'))) {
     die(
       '--from-source builds the image from an ohagi checkout, and this is not one:\n' +
@@ -74,6 +77,7 @@ export function stageBuildContext(): { dir: string; cleanup(): void } {
         'The published package contains only the compiled output, so there is nothing to\n' +
         'build. Clone both repositories side by side and run the deploy from there:\n\n' +
         '  git clone https://github.com/magland/mochiforge\n' +
+        '  git clone https://github.com/magland/arewehuman\n' +
         '  git clone https://github.com/magland/ohagi && cd ohagi && npm install\n' +
         '  npx tsx src/index.ts deploy fly <app> --from-source\n'
     );
@@ -84,6 +88,12 @@ export function stageBuildContext(): { dir: string; cleanup(): void } {
         'Clone it there: git clone https://github.com/magland/mochiforge'
     );
   }
+  if (!awh || !fs.existsSync(path.join(awh, 'src'))) {
+    die(
+      `ohagi builds against arewehuman's sources, expected beside it at ${awh ?? '../arewehuman'}.\n` +
+        'Clone it there: git clone https://github.com/magland/arewehuman'
+    );
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ohagi-build-'));
   for (const f of OHAGI_FILES) {
     const from = path.join(root, f);
@@ -91,6 +101,9 @@ export function stageBuildContext(): { dir: string; cleanup(): void } {
   }
   for (const f of MOCHIFORGE_FILES) {
     fs.cpSync(path.join(sibling, f), path.join(dir, 'mochiforge', f), { recursive: true });
+  }
+  for (const f of AREWEHUMAN_FILES) {
+    fs.cpSync(path.join(awh, f), path.join(dir, 'arewehuman', f), { recursive: true });
   }
   fs.copyFileSync(path.join(root, 'Dockerfile'), path.join(dir, 'Dockerfile'));
   let removed = false;

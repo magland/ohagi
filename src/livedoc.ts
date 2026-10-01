@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ChangeSet, Text } from '@codemirror/state';
+import { DocRecording, readMeta } from './recording';
 
 // A file being edited, held in memory while anyone has it open. The server is
 // the single authority over its text, in the way @codemirror/collab expects:
@@ -47,6 +48,14 @@ const FLUSH_MAX_DELAY_MS = 5000;
 export interface UpdateJSON {
   clientID: string;
   changes: unknown;
+  /** How the page says the change came about, for the file's recording (see src/recording.ts). */
+  awh?: unknown;
+}
+
+/** Who pushed changes, and when the page sent them by its own clock. */
+export interface Pusher {
+  author: string;
+  sentAt?: number;
 }
 
 interface Update {
@@ -127,6 +136,8 @@ export class LiveDoc {
   private firstUnflushedAt = 0;
   readonly subscribers = new Set<Subscriber>();
   readonly peers = new Map<string, Peer>();
+  /** The file's arewehuman recording, when its project records it (see src/recording.ts). */
+  recording: DocRecording | null = null;
 
   constructor(
     readonly file: string,
@@ -218,7 +229,7 @@ export class LiveDoc {
    * PushRefused when the page's history is not this one, and any other error
    * for a malformed push.
    */
-  push(epoch: string, version: number, updatesJSON: UpdateJSON[]): PushResult {
+  push(epoch: string, version: number, updatesJSON: UpdateJSON[], by?: Pusher): PushResult {
     if (epoch !== this.epoch || version < this.base || version > this.version) throw new PushRefused();
     if (version !== this.version) return { accepted: false, version: this.version };
     const updates: Update[] = updatesJSON.map((u) => {
@@ -232,6 +243,14 @@ export class LiveDoc {
       if (u.changes.length !== text.length) throw new Error('change does not fit the document');
       text = u.changes.apply(text);
       if (text.length > MAX_LENGTH) throw new Error('document too large');
+    }
+    if (this.recording) {
+      const now = Date.now();
+      let before = this.text;
+      updates.forEach((u, i) => {
+        this.recording!.accept(before, u.changes, readMeta(updatesJSON[i].awh), by?.author ?? '', now, by?.sentAt);
+        before = u.changes.apply(before);
+      });
     }
     const from = this.version;
     const lines = updates.map((u, i) => JSON.stringify({ v: from + i + 1, c: u.clientID, ch: u.changes.toJSON() })).join('\n') + '\n';
@@ -329,6 +348,7 @@ export class LiveDoc {
     const raw = this.text.toString();
     writeAtomic(this.file, raw);
     this.writeMeta(raw);
+    void this.recording?.save(raw);
     if (this.logLines > 2 * KEEP) {
       const lines = this.updates.map((u, i) => JSON.stringify({ v: this.base + i + 1, c: u.clientID, ch: u.changes.toJSON() }));
       writeAtomic(this.logFile, lines.map((l) => l + '\n').join(''));
@@ -363,11 +383,16 @@ export class LiveDoc {
    * history, since the old one cannot be continued into it, and send every
    * open page the whole text, as a page from an old epoch is sent it.
    */
-  reloadFromDisk(): void {
+  reloadFromDisk(author = ''): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     const raw = fs.readFileSync(this.file, 'utf8');
+    const before = this.text.toString();
     this.text = Text.of(raw.split(/\r\n?|\n/));
+    if (this.recording) {
+      this.recording.outside(before, this.text.toString(), author);
+      void this.recording.save(this.text.toString());
+    }
     this.epoch = newEpoch();
     this.base = 0;
     this.updates = [];

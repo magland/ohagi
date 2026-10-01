@@ -74,3 +74,8 @@ table.listing.tree td:last-child { width: 1%; white-space: nowrap; }
 @media (max-width: 1000px) { .pdf-pane { flex-basis: 40%; } }
 @media (max-width: 700px) { .pdf-pane { display: none; } }
 .auto-compile { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-muted); cursor: pointer; }
+
+/* arewehuman: the recording badge and the who-wrote-what frame */
+.awh-badge { text-decoration: none; color: var(--danger); border-color: currentColor; }
+.awh-badge:hover { text-decoration: underline; }
+.awh-frame { display: block; width: 100%; height: calc(100vh - 150px); min-height: 480px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }

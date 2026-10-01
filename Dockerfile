@@ -2,8 +2,8 @@
 # Node and a full TeX Live (Dockerfile.base, published by base.yml). BASE may
 # name another, such as one built locally from Dockerfile.base.
 #
-# ohagi compiles mochiforge's sources in with its own, so the build context is
-# the directory holding both checkouts side by side, not this one:
+# ohagi compiles mochiforge's and arewehuman's sources in with its own, so the
+# build context is the directory holding the checkouts side by side, not this one:
 #
 #   docker build -f ohagi/Dockerfile -t ohagi .     (from the parent directory)
 #   docker build -f Dockerfile -t ohagi ..          (from inside ohagi)
@@ -22,6 +22,7 @@ RUN npm ci
 # walking up from there, which reaches /build/node_modules and nothing else.
 RUN ln -s /build/ohagi/node_modules /build/node_modules
 COPY mochiforge/src /build/mochiforge/src
+COPY arewehuman/src /build/arewehuman/src
 COPY ohagi/tsconfig.json ./
 COPY ohagi/src ./src
 COPY ohagi/client ./client

@@ -1,10 +1,11 @@
 # The type check and the test suite, on every Node the package claims to
 # support.
 #
-# ohagi compiles mochiforge's sources in with its own, so every job checks out
-# both repositories side by side, as they sit on a developer's disk. The
-# mochiforge ref is `main` unless the dispatch names another: a change to the
-# shared modules reaches ohagi's next run without a release in between.
+# ohagi compiles mochiforge's and arewehuman's sources in with its own, so
+# every job checks out the three repositories side by side, as they sit on a
+# developer's disk. Their refs are `main` unless the dispatch names others: a
+# change to the shared modules reaches ohagi's next run without a release in
+# between.
 #
 # The tests compile documents, so the runner gets a small TeX Live: enough
 # for pdflatex and latexmk, and poppler for reading the PDFs back. bubblewrap
@@ -20,6 +21,9 @@ on:
     inputs:
       mochiforge-ref:
         description: mochiforge branch, tag, or commit to build against
+        default: main
+      arewehuman-ref:
+        description: arewehuman branch, tag, or commit to build against
         default: main
 
 concurrency:
@@ -46,6 +50,12 @@ jobs:
           ref: ${{ inputs.mochiforge-ref || 'main' }}
           path: mochiforge
 
+      - uses: actions/checkout@v4
+        with:
+          repository: magland/arewehuman
+          ref: ${{ inputs.arewehuman-ref || 'main' }}
+          path: arewehuman
+
       - name: Install TeX
         run: |
           sudo apt-get update -q
@@ -60,9 +70,9 @@ jobs:
       - run: npm ci
         working-directory: ohagi
 
-      # mochiforge has no node_modules here, and its sources find packages by
-      # walking up from mochiforge/src, which reaches the checkout root and
-      # never ohagi/node_modules. The link puts ohagi's packages there, as the
+      # mochiforge and arewehuman have no node_modules here, and their sources
+      # find packages by walking up from their src, which reaches the checkout
+      # root and never ohagi/node_modules. The link puts ohagi's packages there, as the
       # Dockerfile does, so a package the shared modules need and ohagi does
       # not declare fails here rather than in the image.
       - run: ln -s ohagi/node_modules node_modules

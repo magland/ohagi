@@ -417,6 +417,14 @@ export function renameFile(ref: ProjectRef, from: string, to: string): { from: s
       fs.renameSync(x, y);
     }
   }
+  // Its arewehuman recordings move with it (see src/recording.ts).
+  const recFrom = path.join(filesDir(ref.dir), '.arewehuman', a.clean);
+  const recTo = path.join(filesDir(ref.dir), '.arewehuman', b.clean);
+  if (fs.existsSync(recFrom) && !fs.existsSync(recTo)) {
+    fs.mkdirSync(path.dirname(recTo), { recursive: true });
+    fs.renameSync(recFrom, recTo);
+    pruneEmpty(filesDir(ref.dir), path.join('.arewehuman', a.clean));
+  }
   pruneEmpty(filesDir(ref.dir), a.clean);
   pruneEmpty(collabDir(ref.dir), a.clean);
   return { from: a.clean, to: b.clean };
@@ -428,6 +436,12 @@ export function removeFile(ref: ProjectRef, rel: string): string {
   if (!fileExists(ref, clean)) throw new ProjectError(`There is no file ${clean}.`, 'missing');
   fs.unlinkSync(full);
   for (const f of collabFiles(ref, clean)) fs.rmSync(f, { force: true });
+  // Its arewehuman recordings go with it (the project's git history keeps them).
+  const rec = path.join(filesDir(ref.dir), '.arewehuman', clean);
+  if (fs.existsSync(rec)) {
+    fs.rmSync(rec, { recursive: true, force: true });
+    pruneEmpty(filesDir(ref.dir), path.join('.arewehuman', clean));
+  }
   pruneEmpty(filesDir(ref.dir), clean);
   pruneEmpty(collabDir(ref.dir), clean);
   return clean;

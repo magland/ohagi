@@ -8,8 +8,8 @@
 # building the commit ci tested; a version tag is gated on being pushed only
 # after a release passed.
 #
-# The build context is the runner's workspace, holding both checkouts, since the
-# image compiles mochiforge's sources in (see the Dockerfile).
+# The build context is the runner's workspace, holding the checkouts, since the
+# image compiles mochiforge's and arewehuman's sources in (see the Dockerfile).
 #
 # The image is built on the base image (Dockerfile.base, published by
 # base.yml), which carries TeX Live and is nearly all of the size, so a
@@ -71,6 +71,12 @@ jobs:
           repository: magland/mochiforge
           ref: main
           path: mochiforge
+
+      - uses: actions/checkout@v4
+        with:
+          repository: magland/arewehuman
+          ref: main
+          path: arewehuman
 
       # Docker's own builder rather than buildx's container: the image it
       # builds is in the engine the checks below run it from, so they do not
@@ -199,6 +205,12 @@ jobs:
           repository: magland/mochiforge
           ref: main
           path: mochiforge
+
+      - uses: actions/checkout@v4
+        with:
+          repository: magland/arewehuman
+          ref: main
+          path: arewehuman
 
       # Pinned to a commit rather than to master, as mochiforge pins it: this
       # step runs in the job that holds the Fly credential.

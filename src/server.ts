@@ -131,6 +131,8 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, history:
   const editorJs = loadBuilt(path.join(staticDir, 'editor.js'));
   const ohagiCss = loadBuilt(path.join(staticDir, 'ohagi.css'));
   const pdfWorker = loadBuilt(path.join(staticDir, 'pdf.worker.mjs'));
+  const viewerJs = loadBuilt(path.join(staticDir, 'awh-viewer.js'));
+  const viewerCss = loadBuilt(path.join(staticDir, 'awh-viewer.css'));
   // Every page the shared layout draws, mochi's sign-in and account pages
   // among them, links ohagi's stylesheet after mochi's.
   setNaming({ pageHead: `\n<link rel="stylesheet" href="/assets/ohagi.css?v=${ohagiCss.tag}">` });
@@ -144,6 +146,8 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, history:
   app.get('/assets/editor.js', serveBuilt(editorJs, 'text/javascript'));
   app.get('/assets/ohagi.css', serveBuilt(ohagiCss, 'text/css'));
   app.get('/assets/pdf.worker.mjs', serveBuilt(pdfWorker, 'text/javascript'));
+  app.get('/assets/awh-viewer.js', serveBuilt(viewerJs, 'text/javascript'));
+  app.get('/assets/awh-viewer.css', serveBuilt(viewerCss, 'text/css'));
 
   // The jump box's list: every project this viewer can open, as
   // collection/name, which is the shape mochi's page script searches.
@@ -192,7 +196,7 @@ export function createApp(root: string, docs: Docs, compiler: Compiler, history:
   // the same ones a vault serves.
   registerAccountWeb(app, root, authLimiter);
   registerAdminWeb(app, root, { removeUserGrants });
-  registerWeb(app, root, docs, history, editorJs.tag, pdfWorker.tag);
+  registerWeb(app, root, docs, history, editorJs.tag, pdfWorker.tag, { js: viewerJs.tag, css: viewerCss.tag });
 
   app.use((req, res) => {
     res.status(404).type('html').send(errorPage(404, 'Page not found', { viewer: getViewer(req, root) }));

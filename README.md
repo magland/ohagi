@@ -23,6 +23,7 @@ A new shelf is any empty directory: `ohagi serve mydir` initializes it and print
 - **Collaborative editing** of every text file in a project, `.tex`, `.bib`, `.sty`, and the rest, in CodeMirror 6, with each person's cursor and name shown to the others.
 - **Compiling to PDF** with latexmk (pdflatex, xelatex, or lualatex), in a sandbox, with the PDF beside the editor, errors linked to their lines, and every open editor of the project refreshed when anyone compiles. Recompile is Ctrl+S or Ctrl+Enter, and Auto compiles a moment after typing stops. Double-clicking the PDF goes to the source that made that spot (SyncTeX), in whichever file it is.
 - **git clone** of a project at its own address, read-only. The shelf commits a project's files a minute after editing stops, attributed to whoever edited, and again before any clone, so a clone or a pull has what the editors show.
+- **A writing record** with [arewehuman](https://github.com/magland/arewehuman), turned on in a project's settings: every edit to the chosen files, with who made it, when, and whether it was typed, pasted, or came from elsewhere, so readers can see who wrote what and watch it being written. See "Recording how a project is written" below.
 - **Files:** create, upload, rename or move, and delete, with anyone who has the file open following it; figures and other binary files are uploaded and served as they are.
 - **Projects in collections,** addressed as `/<collection>/<project>`, with mochi's naming rules.
 - **Members only.** A project is private: its collaborators, its collection's owners, and site admins see it, and nobody else learns it exists. Roles are mochi's: `read` opens the editor read-only, `write` edits, `admin` manages. A user owns the collection named after them.
@@ -42,6 +43,23 @@ Only the page rebases. We first let the server rebase stale pushes itself (colla
 Remote cursors travel separately and are held in memory only. A page sends its selection in the text at its synced version, and the server carries it forward over later changes before passing it on. The name shown is the signed-in user's, set by the server.
 
 The sync API takes either of mochi's credentials: the browser's session cookie, with the session's CSRF value on every write, or a bearer token.
+
+## Recording how a project is written
+
+A project's admin turns recording on under Settings > Writing record, choosing the files to record (by default `*.tex` and `*.md`). This creates the project's `.arewehuman` directory, arewehuman's place for a project's recordings:
+
+```
+files/.arewehuman/config.json             { "autoRecord": ["*.tex", "*.md"] }
+files/.arewehuman/<path>/ohagi.awh.jsonl  the recording of files/<path>
+```
+
+Being under `files/`, the recordings are committed with the project and come with a clone, and arewehuman's viewer and VS Code extension read them there. Being a dot-directory, they are not among the files the interface lists, edits, or compiles. A file is recorded from its first edit after it matches a pattern, and a file that has a recording goes on being recorded.
+
+In arewehuman's terms the shelf is one workspace, `ohagi`, and each file has one recording that everyone editing it shares. The page says how each of its edits came about, as arewehuman's own editors decide it: typed (just after a keydown or IME composition step), pasted, undone, moved, or otherwise. The server records the edit, adding who made it, from the session, as an author event whenever the person changes, and when, by its own clock, keeping the rhythm of the page's edits. Copying or cutting puts a random nonce on the clipboard beside the text and tells the server which characters were copied (never the text), so that a cut pasted back is a move, and text copied or moved from another file of the project is recorded as coming from that file's recording. The values of deleted characters are never recorded.
+
+A recorded file's editor shows a **● Recording** badge, which leads to who wrote what: the file's text colored by author, each person's share and how much of it was typed, and a replay, drawn by arewehuman's own viewer. Renaming a file moves its recording; deleting it removes it (git keeps the history); uploading over it records the difference as other, by the uploader; a change on disk while the server is stopped is recorded as other, by nobody known.
+
+As in arewehuman's web app and VS Code extension, whether an edit was typed is the page's word, which a determined person could fake; the server vouches for who made it and when.
 
 ## How compiling works
 
@@ -84,6 +102,8 @@ ohagi imports mochiforge's modules directly from the sibling checkout (`../mochi
 
 The trade-off is dango's: ohagi does not build without the sibling checkout present. The compiled output carries the mochiforge modules it uses (`dist/mochiforge` beside `dist/ohagi`), so what ships does not.
 
+ohagi also imports arewehuman's recorder, file format, and viewer from its sibling checkout (`../arewehuman`), in the same way; CI, the image, and `deploy fly --from-source` check it out beside the others.
+
 ## Development
 
 ```bash
@@ -91,7 +111,7 @@ npm run typecheck
 npm test          # concurrent editing through a restart, permissions, files, the CLI, and compiling (sandbox escapes included)
 ```
 
-The tests drive `client/sync.ts`, the same module the browser runs, from Node, and sign in through mochi's real `/login` form. The editor bundle (`dist/static/editor.js`, about 110 KB gzipped) is the one build step the pages have.
+The tests drive `client/sync.ts`, the same module the browser runs, from Node, and sign in through mochi's real `/login` form. The editor bundle (`dist/static/editor.js`) and the who-wrote-what viewer (`dist/static/awh-viewer.js`, arewehuman's, with React) are the build steps the pages have.
 
 ## Limitations
 

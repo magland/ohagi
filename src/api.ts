@@ -1,4 +1,5 @@
 import express, { Express, Request, Response } from 'express';
+import * as fs from 'fs';
 import { statSync } from 'fs';
 
 const fsStatFile = (f: string) => statSync(f).isFile();
@@ -26,6 +27,7 @@ import { DocNotFound, Docs } from './docs';
 import { History } from './history';
 import { DocEvent, LiveDoc, PushRefused } from './livedoc';
 import { fileUrl } from './views';
+import { projectRecordings } from './recording';
 import {
   ProjectError,
   ProjectRef,
@@ -118,19 +120,28 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
   app.get(`${base}/doc`, (req, res) => {
     const a = access(req, res, 'read');
     if (!a) return;
-    res.json({ epoch: a.doc.epoch, version: a.doc.version, doc: a.doc.text.toString(), writable: atLeast(a.role, 'write') });
+    res.json({
+      epoch: a.doc.epoch,
+      version: a.doc.version,
+      doc: a.doc.text.toString(),
+      writable: atLeast(a.role, 'write'),
+      recording: a.doc.recording !== null,
+    });
   });
 
   app.post(`${base}/push`, (req, res) => {
     const a = access(req, res, 'write', true);
     if (!a) return;
-    const { epoch, version, updates } = req.body ?? {};
+    const { epoch, version, updates, sentAt } = req.body ?? {};
     if (typeof epoch !== 'string' || !Number.isInteger(version) || !Array.isArray(updates)) {
       apiError(res, 400, 'epoch, version, and updates required');
       return;
     }
     try {
-      const result = a.doc.push(epoch, version, updates);
+      const result = a.doc.push(epoch, version, updates, {
+        author: a.auth.username,
+        sentAt: typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined,
+      });
       if (result.accepted && updates.length) history.touched(a.ref, a.auth.username, updates.length);
       res.json(result);
     } catch (e) {
@@ -151,6 +162,79 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     }
     a.doc.presence(epoch, version, { clientID: clientID.slice(0, 40), name: a.auth.username, anchor, head });
     res.json({});
+  });
+
+  // A copy made in a page of a recorded file: the server notes which
+  // characters were copied (by their position in the text at the page's
+  // version), under the nonce the page put on the clipboard, so that a paste
+  // of them, in this file or another of the project, can say where they came
+  // from. Nothing is stored but the characters' ids (see src/recording.ts).
+  app.post(`${base}/awh/copy`, (req, res) => {
+    const a = access(req, res, 'read', true);
+    if (!a) return;
+    const { epoch, version, nonce, ranges } = req.body ?? {};
+    const rec = a.doc.recording;
+    if (
+      !rec ||
+      epoch !== a.doc.epoch ||
+      !Number.isInteger(version) ||
+      version < a.doc.base ||
+      version > a.doc.version ||
+      typeof nonce !== 'string' ||
+      !nonce ||
+      nonce.length > 100 ||
+      !Array.isArray(ranges) ||
+      ranges.length > 1000
+    ) {
+      res.json({ registered: false });
+      return;
+    }
+    // Carry the positions from the page's version to the current one.
+    const later = a.doc.updates.slice(version - a.doc.base);
+    const len = a.doc.text.length;
+    const now: { from: number; to: number }[] = [];
+    for (const r of ranges) {
+      if (!Array.isArray(r) || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || r[0] < 0 || r[1] < r[0]) continue;
+      let [from, to] = r as [number, number];
+      for (const u of later) {
+        from = u.changes.mapPos(from, 1);
+        to = u.changes.mapPos(to, -1);
+      }
+      from = Math.min(from, len);
+      to = Math.min(to, len);
+      if (to > from) now.push({ from, to });
+    }
+    if (now.length) rec.copied(a.doc.text, now, nonce);
+    res.json({ registered: now.length > 0 });
+  });
+
+  // Everything the who-wrote-what page shows for a file (see src/views.ts,
+  // recordPage): its text, its recordings, and the other files' recordings
+  // in the project, which text may have been moved or copied from.
+  app.get(`${base}/awh/record`, async (req, res, next) => {
+    try {
+      const a = access(req, res, 'read');
+      if (!a) return;
+      docs.flushProject(a.ref.dir);
+      await docs.settle(a.ref.dir);
+      const clean = cleanPath(String(req.query.path ?? ''))!;
+      const read = (f: string) => {
+        try {
+          return fs.readFileSync(f, 'utf8');
+        } catch {
+          return '';
+        }
+      };
+      const all = projectRecordings(a.ref);
+      res.json({
+        title: clean.split('/').pop(),
+        text: a.doc.text.toString(),
+        recs: all.filter((r) => r.file === clean).map((r) => ({ name: r.workspace, log: read(r.full) })),
+        others: all.filter((r) => r.file !== clean).map((r) => ({ name: `${r.file} · ${r.workspace}`, log: read(r.full) })),
+      });
+    } catch (e) {
+      next(e);
+    }
   });
 
   app.get(`${base}/events`, (req, res) => {
@@ -419,7 +503,7 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     const data = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     try {
       const clean = writeFile(p.ref, pathParam(req), data, { overwrite: req.query.overwrite === '1' });
-      docs.peek(p.ref, clean)?.reloadFromDisk();
+      docs.peek(p.ref, clean)?.reloadFromDisk(p.auth.username);
       history.touched(p.ref, p.auth.username);
       res.json({ path: clean, size: data.length });
     } catch (e) {
@@ -427,21 +511,22 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
     }
   });
 
-  app.delete('/api/projects/:collection/:project/raw', (req, res) => {
+  app.delete('/api/projects/:collection/:project/raw', async (req, res, next) => {
     const p = projectFor(req, res, 'write', true);
     if (!p) return;
     try {
       if (!fileExists(p.ref, pathParam(req))) throw new ProjectError(`There is no file ${pathParam(req)}.`, 'missing');
-      docs.closeFile(p.ref, pathParam(req), { type: 'closed', reason: 'deleted' });
+      await docs.closeFile(p.ref, pathParam(req), { type: 'closed', reason: 'deleted' });
       const gone = removeFile(p.ref, pathParam(req));
       history.touched(p.ref, p.auth.username);
       res.json({ deleted: gone });
     } catch (e) {
-      sendProjectError(res, e);
+      if (e instanceof ProjectError) sendProjectError(res, e);
+      else next(e);
     }
   });
 
-  app.post('/api/projects/:collection/:project/rename', (req, res) => {
+  app.post('/api/projects/:collection/:project/rename', async (req, res, next) => {
     const p = projectFor(req, res, 'write', true);
     if (!p) return;
     const from = typeof body(req).from === 'string' ? (body(req).from as string) : '';
@@ -451,12 +536,13 @@ export function registerApi(app: Express, root: string, limiter: AuthLimiter, do
       const dest = cleanPath(to);
       if (!dest) throw new ProjectError(`Not a usable file name: ${to || '(empty)'}.`);
       if (dest !== from && fileExists(p.ref, dest)) throw new ProjectError(`${dest} already exists.`, 'exists');
-      docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: fileUrl(p.ref, dest) });
+      await docs.closeFile(p.ref, from, { type: 'closed', reason: 'moved', to: fileUrl(p.ref, dest) });
       const moved = renameFile(p.ref, from, dest);
       history.touched(p.ref, p.auth.username);
       res.json(moved);
     } catch (e) {
-      sendProjectError(res, e);
+      if (e instanceof ProjectError) sendProjectError(res, e);
+      else next(e);
     }
   });
 

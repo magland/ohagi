@@ -20,6 +20,7 @@ import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { collab, getClientID } from '@codemirror/collab';
 import { CompiledSummary, Peer, Status, Sync } from './sync';
+import { editHints, editMeta } from './awh';
 import { PdfView } from './pdfview';
 
 // The editor page: CodeMirror 6 with the collab extension, synced through
@@ -135,6 +136,10 @@ async function main() {
 
   const q = new URLSearchParams({ path });
   const first = await (await fetch(`/api/projects/${encodeURIComponent(collection)}/${encodeURIComponent(project)}/doc?${q}`)).json();
+  // A file its project records with arewehuman (see src/recording.ts): the
+  // badge says so and leads to who wrote what.
+  const recording = first.recording === true;
+  document.getElementById('awh-badge')!.hidden = !recording;
 
   const names = new Map<string, string>();
   const showPeers = () => {
@@ -158,6 +163,9 @@ async function main() {
       doc,
       extensions: [
         collab({ startVersion: version, clientID }),
+        editHints((nonce, ranges) => {
+          if (recording) sync?.registerCopy(nonce, ranges);
+        }),
         editable.of(EditorState.readOnly.of(!writable)),
         peersField,
         lineNumbers(),
@@ -383,6 +391,7 @@ async function main() {
         statusEl.className = 'editor-status status-error';
         statusEl.dataset.state = 'deleted';
       },
+      describe: (origin) => editMeta(origin),
       gone: (id) => {
         names.delete(id);
         showPeers();

@@ -109,6 +109,7 @@ export class History {
     if (p?.timer) clearTimeout(p.timer);
     this.pending.delete(ref.dir);
     this.docs.flushProject(ref.dir);
+    await this.docs.settle(ref.dir);
     if (!fs.existsSync(repoDir(ref))) await initRepo(repoDir(ref));
     await git(ref, ['add', '--all', '--', '.']);
     const status = await git(ref, ['status', '--porcelain']);
