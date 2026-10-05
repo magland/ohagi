@@ -28,6 +28,7 @@ import { shelfCommands } from './commands';
 import { makeBackupCommands } from '../../mochiforge/src/cli/backup-cmd';
 import { OHAGI_BACKUP } from './backup';
 import { OHAGI_DEPLOY } from './deploy';
+import { packageVersion } from './version';
 import { deployDestroyCmd, deployFlyCmd, deployResetTokenCmd, deployShowCmd } from '../../mochiforge/src/deploy-cli';
 
 // The ohagi command: serve a shelf, or talk to a served one the way `mochi`
@@ -323,6 +324,7 @@ app.`,
 
 const cli: Cli = {
   name: 'ohagi',
+  version: packageVersion,
   groups: [
     { name: 'collection', summary: 'List, create, and own collections' },
     { name: 'project', summary: 'List, create, view, and delete projects' },
